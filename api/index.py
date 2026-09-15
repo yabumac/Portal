@@ -119,7 +119,7 @@ async def send_interactive_list(to_number: str):
         "type": "interactive",
         "interactive": {
             "type": "list",
-            "header": {"type": "text", "text": "🎓 Mindsmith Learning Hub"},
+            "header": {"type": "text", "text": "Learning Hub"},
             "body": {"text": "Select a module below to begin your course:"},
             "footer": {"text": "EdTech Hub ET"},
             "action": {
