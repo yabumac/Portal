@@ -18,23 +18,35 @@ COURSES = [
 
 app = FastAPI()
 
+# --- WEBHOOK VERIFICATION (GET) ---
 @app.get("/")
+@app.get("/api")
 @app.get("/api/webhook")
+@app.get("/api/index.py")
 async def verify_webhook(request: Request):
-    """Handles Meta Webhook initial GET verification handshake"""
+    """Handles Meta Webhook GET verification handshake and browser status checks"""
     params = request.query_params
     mode = params.get("hub.mode")
     token = params.get("hub.verify_token")
     challenge = params.get("hub.challenge")
 
+    # Handshake request coming from Meta
     if mode == "subscribe" and token == VERIFY_TOKEN:
         return Response(content=challenge, media_type="text/plain")
+    
+    # Direct browser visit check
+    if not mode:
+        return {"status": "ok", "message": "Mindsmith WhatsApp Webhook is running!"}
+
     return Response(content="Verification failed", status_code=403)
 
+# --- INCOMING MESSAGES HANDLER (POST) ---
 @app.post("/")
+@app.post("/api")
 @app.post("/api/webhook")
+@app.post("/api/index.py")
 async def webhook_handler(request: Request):
-    """Handles incoming WhatsApp messages"""
+    """Handles incoming WhatsApp messages from Meta"""
     data = await request.json()
 
     try:
@@ -55,6 +67,7 @@ async def webhook_handler(request: Request):
 
     return {"status": "ok"}
 
+# --- HELPER FUNCTION TO SEND MESSAGES VIA META API ---
 async def send_course_list(to_number: str):
     """Sends formatted course links via WhatsApp Graph API"""
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
@@ -63,7 +76,6 @@ async def send_course_list(to_number: str):
         "Content-Type": "application/json",
     }
 
-    # WhatsApp supports rich text formatting (*bold*, _italics_) and link previews
     body_text = "👋 *Welcome! Select a course to begin:*\n\n"
     for course in COURSES:
         body_text += f"📘 *{course['name']}*\n🔗 {course['url']}\n\n"
