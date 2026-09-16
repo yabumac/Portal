@@ -1,7 +1,12 @@
 import os
+import logging
 import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse
+
+# Configure logging to see output in Vercel Logs
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("whatsapp_bot")
 
 # --- CONFIGURATION ---
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
@@ -53,21 +58,8 @@ USER_SESSIONS = {}
 
 app = FastAPI()
 
-# --- CONSOLIDATED GET HANDLER (Handles Webhook Verification + Course Player Wrapper) ---
-@app.get("/")
-@app.get("/api")
-@app.get("/api/webhook")
-@app.get("/api/index.py")
-async def get_handler(request: Request):
-    params = request.query_params
-
-    # 1. If query parameter 'mod' exists, serve the full-screen iframe wrapper
-    if "mod" in params:
-        mod_id = params.get("mod", "mod_1")
-        course_data = COURSES.get(mod_id, COURSES["mod_1"])
-        course_url = course_data["url"]
-        
-        html_content = f"""<!DOCTYPE html>
+def render_iframe_wrapper(course_url: str) -> str:
+    return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -96,28 +88,35 @@ async def get_handler(request: Request):
     <iframe src="{course_url}" allow="autoplay; fullscreen; microphone; camera; display-capture" allowfullscreen></iframe>
 </body>
 </html>"""
-        return HTMLResponse(content=html_content)
 
-    # 2. Meta Webhook Verification
+# --- CATCH-ALL GET HANDLER ---
+@app.get("/{path:path}")
+async def handle_get(request: Request, path: str = ""):
+    params = request.query_params
+
+    # Check if this is a request to open a course module
+    if "mod" in params or "learn" in path:
+        mod_id = params.get("mod", "mod_1")
+        course_data = COURSES.get(mod_id, COURSES["mod_1"])
+        return HTMLResponse(content=render_iframe_wrapper(course_data["url"]))
+
+    # Webhook Verification
     mode = params.get("hub.mode")
     token = params.get("hub.verify_token")
     challenge = params.get("hub.challenge")
 
     if mode == "subscribe" and token == VERIFY_TOKEN:
         return Response(content=challenge, media_type="text/plain")
-    
-    return {"status": "ok", "message": "WhatsApp Bot Engine Running"}
 
-# --- INCOMING MESSAGES HANDLER (POST) ---
-@app.post("/")
-@app.post("/api")
-@app.post("/api/webhook")
-@app.post("/api/index.py")
-async def webhook_handler(request: Request):
-    data = await request.json()
+    return Response(content='{"status": "ok", "message": "WhatsApp Bot Engine Running"}', media_type="application/json")
 
+# --- CATCH-ALL POST HANDLER ---
+@app.post("/{path:path}")
+async def handle_post(request: Request, path: str = ""):
     try:
+        data = await request.json()
         entries = data.get("entry", [])
+        
         for entry in entries:
             for change in entry.get("changes", []):
                 value = change.get("value", {})
@@ -128,15 +127,13 @@ async def webhook_handler(request: Request):
                     from_number = incoming_msg.get("from")
                     msg_type = incoming_msg.get("type")
 
-                    # Handle Course List Selection (Triggers Final CTA Button)
+                    # Handle Module Selection from Menu
                     if msg_type == "interactive":
                         interactive = incoming_msg.get("interactive", {})
                         if interactive.get("type") == "list_reply":
                             selected_id = interactive.get("list_reply", {}).get("id")
                             if selected_id in COURSES:
                                 course_data = COURSES[selected_id]
-                                
-                                # Construct direct wrapper URL using the host
                                 host = request.headers.get("host") or os.getenv("VERCEL_URL", "")
                                 if host and not host.startswith("http"):
                                     host = f"https://{host}"
@@ -145,7 +142,7 @@ async def webhook_handler(request: Request):
                                 await send_completion_button(from_number, course_data, wrapper_url)
                                 return {"status": "ok"}
 
-                    # Handle Text Inputs & Questionnaire Steps
+                    # Handle User Responses during Questionnaire Flow
                     if from_number in USER_SESSIONS:
                         session = USER_SESSIONS[from_number]
                         current_step = session["step"] + 1
@@ -154,21 +151,20 @@ async def webhook_handler(request: Request):
                             session["step"] = current_step
                             await send_text_message(from_number, f"Thank you.\n\n{QUESTIONS[current_step]}")
                         else:
-                            # Finished all 5 questions -> Clear session & show Course Menu
                             del USER_SESSIONS[from_number]
                             await send_interactive_list(from_number)
                     else:
-                        # First interaction (e.g. saying "hi"): Start Questionnaire Q1
+                        # Initial Start / Greeting
                         USER_SESSIONS[from_number] = {"step": 0}
                         intro_text = f"Welcome! Before we begin, please answer 5 brief questions to help us tailor your experience:\n\n{QUESTIONS[0]}"
                         await send_text_message(from_number, intro_text)
 
     except Exception as e:
-        print(f"Error handling webhook: {e}")
+        logger.error(f"Error handling webhook POST: {e}", exc_info=True)
 
     return {"status": "ok"}
 
-# --- HELPER FUNCTIONS ---
+# --- HELPER FUNCTIONS WITH LOGGING ---
 async def send_text_message(to_number: str, text: str):
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
@@ -179,7 +175,8 @@ async def send_text_message(to_number: str, text: str):
         "text": {"body": text}
     }
     async with httpx.AsyncClient() as client:
-        await client.post(url, headers=headers, json=payload)
+        res = await client.post(url, headers=headers, json=payload)
+        logger.info(f"Send Text Status: {res.status_code} - Response: {res.text}")
 
 async def send_interactive_list(to_number: str):
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
@@ -201,7 +198,8 @@ async def send_interactive_list(to_number: str):
         }
     }
     async with httpx.AsyncClient() as client:
-        await client.post(url, headers=headers, json=payload)
+        res = await client.post(url, headers=headers, json=payload)
+        logger.info(f"Send List Status: {res.status_code} - Response: {res.text}")
 
 async def send_completion_button(to_number: str, course: dict, wrapper_url: str):
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
@@ -224,4 +222,5 @@ async def send_completion_button(to_number: str, course: dict, wrapper_url: str)
         }
     }
     async with httpx.AsyncClient() as client:
-        await client.post(url, headers=headers, json=payload)
+        res = await client.post(url, headers=headers, json=payload)
+        logger.info(f"Send CTA Status: {res.status_code} - Response: {res.text}")
