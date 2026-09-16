@@ -53,20 +53,26 @@ USER_SESSIONS = {}
 
 app = FastAPI()
 
-# --- FLAWLESS HTML WRAPPER PLAYER (Supports all Vercel path variations) ---
-@app.get("/learn", response_class=HTMLResponse)
-@app.get("/api/learn", response_class=HTMLResponse)
-@app.get("/api/index.py/learn", response_class=HTMLResponse)
-async def serve_course_player(mod: str = "mod_1"):
-    """Serves the Mindsmith course seamlessly inside a full-height web frame."""
-    course_url = COURSES.get(mod, COURSES["mod_1"])["url"]
-    
-    html_content = f"""<!DOCTYPE html>
+# --- CONSOLIDATED GET HANDLER (Handles Webhook Verification + Course Player Wrapper) ---
+@app.get("/")
+@app.get("/api")
+@app.get("/api/webhook")
+@app.get("/api/index.py")
+async def get_handler(request: Request):
+    params = request.query_params
+
+    # 1. If query parameter 'mod' exists, serve the full-screen iframe wrapper
+    if "mod" in params:
+        mod_id = params.get("mod", "mod_1")
+        course_data = COURSES.get(mod_id, COURSES["mod_1"])
+        course_url = course_data["url"]
+        
+        html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Learning Portal</title>
+    <title>EdTech Hub Learning Portal</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         html, body {{
@@ -90,15 +96,9 @@ async def serve_course_player(mod: str = "mod_1"):
     <iframe src="{course_url}" allow="autoplay; fullscreen; microphone; camera; display-capture" allowfullscreen></iframe>
 </body>
 </html>"""
-    return HTMLResponse(content=html_content)
+        return HTMLResponse(content=html_content)
 
-# --- WEBHOOK VERIFICATION (GET) ---
-@app.get("/")
-@app.get("/api")
-@app.get("/api/webhook")
-@app.get("/api/index.py")
-async def verify_webhook(request: Request):
-    params = request.query_params
+    # 2. Meta Webhook Verification
     mode = params.get("hub.mode")
     token = params.get("hub.verify_token")
     challenge = params.get("hub.challenge")
@@ -136,12 +136,12 @@ async def webhook_handler(request: Request):
                             if selected_id in COURSES:
                                 course_data = COURSES[selected_id]
                                 
-                                # Dynamically construct wrapper URL using current host
+                                # Construct direct wrapper URL using the host
                                 host = request.headers.get("host") or os.getenv("VERCEL_URL", "")
                                 if host and not host.startswith("http"):
                                     host = f"https://{host}"
                                 
-                                wrapper_url = f"{host}/api/learn?mod={selected_id}"
+                                wrapper_url = f"{host}/api?mod={selected_id}"
                                 await send_completion_button(from_number, course_data, wrapper_url)
                                 return {"status": "ok"}
 
