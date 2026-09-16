@@ -1,0 +1,1 @@
+"""Bot package: WhatsApp API helpers, user state, and the Gemini AI tutor."""

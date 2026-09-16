@@ -1,0 +1,1 @@
+"""Content package: static course curriculum data and lookup helpers."""

@@ -1,226 +1,311 @@
-import os
-import logging
-import httpx
-from fastapi import FastAPI, Request, Response
-from fastapi.responses import HTMLResponse
+"""
+api/index.py
 
-# Configure logging to see output in Vercel Logs
+FastAPI entry point for the WhatsApp Learning Bot (deployed on Vercel as a
+Python serverless function).
+
+Routes
+------
+GET  /webhook  - Meta webhook verification (hub.mode / verify_token / challenge)
+POST /webhook  - Meta webhook events (all incoming user messages)
+GET  /         - health check
+
+Flow
+----
+    "hi" -> welcome + interactive buttons [Start Unit 1] [Ask AI Tutor]
+    Start Unit 1 -> stream lesson text + media -> "Ready for Quiz?" button
+    Ready for Quiz -> quiz question with A/B/C buttons
+    correct answer -> feedback + next lesson (or unit complete)
+    wrong answer   -> feedback with the right option + retry the same quiz
+    any other free text -> routed to the AI Tutor (Gemini), then guided back
+                           to the active lesson/quiz
+"""
+
+import logging
+import os
+
+from fastapi import FastAPI, Request, Response
+
+from bot import ai_tutor, state, whatsapp
+from content import curriculum
+
+# --- Logging (visible in Vercel Logs) ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("whatsapp_bot")
 
-# --- CONFIGURATION ---
-WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
-PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
+# --- Config ---
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 
-COURSES = {
-    "mod_1": {
-        "title": "Module 1",
-        "name": "Classroom Management",
-        "url": "https://app.mindsmith.ai/course/cmpba2car003a04jvn38qz6zd/learn"
-    },
-    "mod_2": {
-        "title": "Module 2",
-        "name": "Inclusive Quality Education",
-        "url": "https://app.mindsmith.ai/course/cmph7l3ss001e0cjao5wox5kc/learn"
-    },
-    "mod_3": {
-        "title": "Module 3",
-        "name": "Adaptive & Learning Centered",
-        "url": "https://app.mindsmith.ai/course/cmpbbbcf3004m04l7trxrvgh6/learn"
-    },
-    "mod_4": {
-        "title": "Module 4",
-        "name": "Digital Literacy",
-        "url": "https://app.mindsmith.ai/course/cmpdnzj9d00yj04ih9efiqok7/learn"
-    },
-    "mod_5": {
-        "title": "Module 5",
-        "name": "Career Employability",
-        "url": "https://app.mindsmith.ai/course/cmph6q0dh001c0bjlo1toswji/learn"
-    },
-    "mod_6": {
-        "title": "Module 6",
-        "name": "Educational Technology",
-        "url": "https://app.mindsmith.ai/course/cmp5hsbon00tj04kziwu8xlmf/learn"
-    }
-}
-
-QUESTIONS = [
-    "Q1/5: Which language do you primarily use in your classroom? (e.g., English, Amharic, Afaan Oromo)",
-    "Q2/5: What main teaching materials do you have available? (e.g., Textbooks, Digital devices, Blackboard only)",
-    "Q3/5: What reading or skill level are most of your students at? (e.g., Beginners, Intermediate, Advanced)",
-    "Q4/5: What is your primary classroom challenge right now? (e.g., Large class size, Engagement, Lack of materials)",
-    "Q5/5: How many years of teaching experience do you have? (e.g., 0-2 years, 3-5 years, 5+ years)"
-]
-
-USER_SESSIONS = {}
+# --- Button / option ids ---
+START_UNIT = "start_unit_1"
+ASK_TUTOR = "ask_ai_tutor"
+READY_QUIZ = "quiz_ready"
+ANSWER_PREFIX = "ans:"  # answer button ids look like "ans:A", "ans:B", "ans:C"
+GREETINGS = {"hi", "hello", "hey", "start", "menu", "help"}
 
 app = FastAPI()
 
-def render_iframe_wrapper(course_url: str) -> str:
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>EdTech Hub Learning Portal</title>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        html, body {{
-            width: 100%;
-            height: 100%;
-            height: 100dvh;
-            overflow: hidden;
-            background-color: #0f172a;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-        }}
-        iframe {{
-            width: 100%;
-            height: 100%;
-            height: 100dvh;
-            border: 0;
-            display: block;
-        }}
-    </style>
-</head>
-<body>
-    <iframe src="{course_url}" allow="autoplay; fullscreen; microphone; camera; display-capture" allowfullscreen></iframe>
-</body>
-</html>"""
 
-# --- CATCH-ALL GET HANDLER ---
+# ---------------------------------------------------------------------------
+# GET: webhook verification + health check
+# ---------------------------------------------------------------------------
 @app.get("/{path:path}")
 async def handle_get(request: Request, path: str = ""):
     params = request.query_params
 
-    # Check if this is a request to open a course module
-    if "mod" in params or "learn" in path:
-        mod_id = params.get("mod", "mod_1")
-        course_data = COURSES.get(mod_id, COURSES["mod_1"])
-        return HTMLResponse(content=render_iframe_wrapper(course_data["url"]))
-
-    # Webhook Verification
     mode = params.get("hub.mode")
     token = params.get("hub.verify_token")
     challenge = params.get("hub.challenge")
 
     if mode == "subscribe" and token == VERIFY_TOKEN:
+        logger.info("Webhook verified (%s)", mode)
         return Response(content=challenge, media_type="text/plain")
 
-    return Response(content='{"status": "ok", "message": "WhatsApp Bot Engine Running"}', media_type="application/json")
+    if token != VERIFY_TOKEN and mode:
+        logger.warning("Webhook verification failed: bad verify_token")
+        return Response(content="Forbidden", media_type="text/plain", status_code=403)
 
-# --- CATCH-ALL POST HANDLER ---
+    return Response(
+        content='{"status": "ok", "message": "WhatsApp Learning Bot running"}',
+        media_type="application/json",
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST: webhook events
+# ---------------------------------------------------------------------------
 @app.post("/{path:path}")
 async def handle_post(request: Request, path: str = ""):
     try:
         data = await request.json()
-        entries = data.get("entry", [])
-        
-        for entry in entries:
-            for change in entry.get("changes", []):
+        logger.debug("Incoming webhook payload: %s", data)
+
+        for entry in data.get("entry", []):
+            changes = entry.get("changes", [])
+            for change in changes:
                 value = change.get("value", {})
-                messages = value.get("messages", [])
-                
-                if messages:
-                    incoming_msg = messages[0]
-                    from_number = incoming_msg.get("from")
-                    msg_type = incoming_msg.get("type")
-
-                    # Handle Module Selection from Menu
-                    if msg_type == "interactive":
-                        interactive = incoming_msg.get("interactive", {})
-                        if interactive.get("type") == "list_reply":
-                            selected_id = interactive.get("list_reply", {}).get("id")
-                            if selected_id in COURSES:
-                                course_data = COURSES[selected_id]
-                                host = request.headers.get("host") or os.getenv("VERCEL_URL", "")
-                                if host and not host.startswith("http"):
-                                    host = f"https://{host}"
-                                
-                                wrapper_url = f"{host}/api?mod={selected_id}"
-                                await send_completion_button(from_number, course_data, wrapper_url)
-                                return {"status": "ok"}
-
-                    # Handle User Responses during Questionnaire Flow
-                    if from_number in USER_SESSIONS:
-                        session = USER_SESSIONS[from_number]
-                        current_step = session["step"] + 1
-
-                        if current_step < len(QUESTIONS):
-                            session["step"] = current_step
-                            await send_text_message(from_number, f"Thank you.\n\n{QUESTIONS[current_step]}")
-                        else:
-                            del USER_SESSIONS[from_number]
-                            await send_interactive_list(from_number)
-                    else:
-                        # Initial Start / Greeting
-                        USER_SESSIONS[from_number] = {"step": 0}
-                        intro_text = f"Welcome! Before we begin, please answer 5 brief questions to help us tailor your experience:\n\n{QUESTIONS[0]}"
-                        await send_text_message(from_number, intro_text)
-
-    except Exception as e:
-        logger.error(f"Error handling webhook POST: {e}", exc_info=True)
+                for message in value.get("messages", []) or []:
+                    wa_id = message.get("from")
+                    if wa_id:
+                        await handle_incoming(wa_id, message)
+    except Exception as exc:  # noqa: BLE001 - never crash out of the webhook
+        logger.error("Error handling webhook POST: %s", exc, exc_info=True)
 
     return {"status": "ok"}
 
-# --- HELPER FUNCTIONS WITH LOGGING ---
-async def send_text_message(to_number: str, text: str):
-    url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
-    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to_number,
-        "type": "text",
-        "text": {"body": text}
-    }
-    async with httpx.AsyncClient() as client:
-        res = await client.post(url, headers=headers, json=payload)
-        logger.info(f"Send Text Status: {res.status_code} - Response: {res.text}")
 
-async def send_interactive_list(to_number: str):
-    url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
-    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
-    rows = [{"id": m_id, "title": m["title"], "description": m["name"][:72]} for m_id, m in COURSES.items()]
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to_number,
-        "type": "interactive",
-        "interactive": {
-            "type": "list",
-            "header": {"type": "text", "text": "🎉 Diagnostic Complete!"},
-            "body": {"text": "Thank you for completing the assessment! Select a course module below to begin learning:"},
-            "footer": {"text": "EdTech Hub ET"},
-            "action": {
-                "button": "Select Module",
-                "sections": [{"title": "Available Modules", "rows": rows}]
-            }
-        }
-    }
-    async with httpx.AsyncClient() as client:
-        res = await client.post(url, headers=headers, json=payload)
-        logger.info(f"Send List Status: {res.status_code} - Response: {res.text}")
+# ---------------------------------------------------------------------------
+# Incoming message router
+# ---------------------------------------------------------------------------
+async def handle_incoming(wa_id: str, message: dict) -> None:
+    await whatsapp.mark_as_read(message.get("id"))
 
-async def send_completion_button(to_number: str, course: dict, wrapper_url: str):
-    url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
-    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to_number,
-        "type": "interactive",
-        "interactive": {
-            "type": "cta_url",
-            "header": {"type": "text", "text": f"📘 {course['title']}: {course['name']}"},
-            "body": {"text": "Tap the button below to launch the module:"},
-            "action": {
-                "name": "cta_url",
-                "parameters": {
-                    "display_text": "🚀 Launch Course",
-                    "url": wrapper_url
-                }
-            }
-        }
-    }
-    async with httpx.AsyncClient() as client:
-        res = await client.post(url, headers=headers, json=payload)
-        logger.info(f"Send CTA Status: {res.status_code} - Response: {res.text}")
+    msg_type = message.get("type")
+
+    if msg_type == "text":
+        raw = message.get("text", {}).get("body", "").strip()
+        lowered = raw.lower()
+
+        if lowered in GREETINGS:
+            await send_menu(wa_id)
+            return
+
+        await handle_ai_fallback(wa_id, raw)
+        return
+
+    if msg_type == "interactive":
+        interactive = message.get("interactive", {})
+        if interactive.get("type") == "button_reply":
+            button_id = interactive.get("button_reply", {}).get("id", "")
+            await handle_button_click(wa_id, button_id)
+        elif interactive.get("type") == "list_reply":
+            list_id = interactive.get("list_reply", {}).get("id", "")
+            await handle_button_click(wa_id, list_id)
+        return
+
+    logger.info("Ignoring unsupported message type=%s from %s", msg_type, wa_id)
+    await whatsapp.send_text(
+        wa_id,
+        "I can only read text messages. Type 'hi' to open the menu, "
+        "or type a question about your course.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Onboarding / menu
+# ---------------------------------------------------------------------------
+async def send_menu(wa_id: str) -> None:
+    welcome = (
+        "Welcome to the EdTech Learning Bot! "
+        "I will guide you through Unit 1: Digital Literacy for Teachers, "
+        "step by step, with quizzes along the way. "
+        "Choose an option below to begin."
+    )
+    await whatsapp.send_buttons(
+        wa_id,
+        welcome,
+        [
+            {"id": START_UNIT, "title": "Start Unit 1"},
+            {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
+        ],
+        header="EdTech Learning Bot",
+        footer="Tap an option below",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Interactive button routing
+# ---------------------------------------------------------------------------
+async def handle_button_click(wa_id: str, button_id: str) -> None:
+    if button_id == START_UNIT:
+        state.start_unit(wa_id, curriculum.DEFAULT_UNIT_ID)
+        lesson = state.current_lesson(state.get_state(wa_id))
+        await deliver_lesson(wa_id, lesson)
+        return
+
+    if button_id == ASK_TUTOR:
+        await whatsapp.send_text(
+            wa_id,
+            "Go ahead - ask me anything about Unit 1 "
+            "(digital literacy, using devices, evaluating resources). "
+            "Type your question now.",
+        )
+        return
+
+    if button_id == READY_QUIZ:
+        await send_quiz(wa_id)
+        return
+
+    if button_id.startswith(ANSWER_PREFIX):
+        await handle_quiz_answer(wa_id, button_id[len(ANSWER_PREFIX):])
+        return
+
+    logger.info("Unknown button id=%s from %s", button_id, wa_id)
+    await send_menu(wa_id)
+
+
+# ---------------------------------------------------------------------------
+# Course delivery
+# ---------------------------------------------------------------------------
+async def deliver_lesson(wa_id: str, lesson) -> None:
+    await whatsapp.send_text(wa_id, f"{lesson['title']}")
+
+    for paragraph in lesson["body"]:
+        await whatsapp.send_text(wa_id, paragraph)
+
+    media = lesson.get("media")
+    if media:
+        await whatsapp.send_media(
+            wa_id,
+            media["type"],
+            media["url"],
+            caption=media.get("caption"),
+            filename=media.get("filename"),
+        )
+
+    await whatsapp.send_buttons(
+        wa_id,
+        "Lesson complete! Ready for the quiz on this topic?",
+        [{"id": READY_QUIZ, "title": "Ready for Quiz"}],
+        footer="Tap to take the quiz",
+    )
+
+
+async def send_quiz(wa_id: str) -> None:
+    cur_state = state.get_state(wa_id)
+    lesson = state.current_lesson(cur_state)
+
+    if not lesson:
+        logger.info("Quiz requested but no active lesson for %s", wa_id)
+        await send_menu(wa_id)
+        return
+
+    quiz = curriculum.get_quiz(cur_state["unit_id"], lesson["id"])
+    if not quiz:
+        logger.error("Missing quiz for unit=%s lesson=%s", cur_state["unit_id"], lesson["id"])
+        await whatsapp.send_text(wa_id, "There is no quiz for this lesson yet.")
+        return
+
+    options = quiz["options"]
+    body = quiz["question"]
+    for letter in ("A", "B", "C", "D", "E"):
+        if letter in options:
+            body += f"\n\n{letter}) {options[letter]}"
+
+    await whatsapp.send_buttons(
+        wa_id,
+        body,
+        [{"id": f"{ANSWER_PREFIX}{letter}", "title": letter} for letter in options],
+        header=f"Quiz - {lesson['title']}",
+        footer="Reply A, B or C via the buttons",
+    )
+    state.open_quiz(wa_id)
+
+
+async def handle_quiz_answer(wa_id: str, answer: str) -> None:
+    cur_state = state.get_state(wa_id)
+    lesson = state.current_lesson(cur_state)
+
+    if not lesson:
+        logger.info("Quiz answer %s but no active quiz for %s", answer, wa_id)
+        await send_menu(wa_id)
+        return
+
+    unit_id = cur_state["unit_id"]
+    lesson_id = lesson["id"]
+
+    if not curriculum.is_valid_option(unit_id, lesson_id, answer):
+        await whatsapp.send_text(
+            wa_id, "That is not one of the options. Please tap A, B or C below."
+        )
+        await send_quiz(wa_id)
+        return
+
+    result = curriculum.check_answer(unit_id, lesson_id, answer)
+    explanation = result["explanation"]
+
+    if result["correct"]:
+        await whatsapp.send_text(
+            wa_id, f"Correct! {explanation} Moving on to the next lesson."
+        )
+    else:
+        await whatsapp.send_text(
+            wa_id,
+            f"Not quite - the correct answer was {result['correct_answer']}. "
+            f"{explanation} Try this one again:",
+        )
+        await send_quiz(wa_id)
+        return
+
+    outcome, next_lesson = state.advance_past_lesson(wa_id)
+    if outcome == "lesson":
+        await deliver_lesson(wa_id, next_lesson)
+    else:
+        unit_meta = curriculum.get_unit(unit_id)
+        await whatsapp.send_text(wa_id, unit_meta["complete_message"])
+        await send_menu(wa_id)
+
+
+# ---------------------------------------------------------------------------
+# AI fallback for free text
+# ---------------------------------------------------------------------------
+async def handle_ai_fallback(wa_id: str, question: str) -> None:
+    logger.info("AI fallback (%s): %s", wa_id, question[:160])
+    answer = await ai_tutor.answer_question(question)
+    await whatsapp.send_text(wa_id, answer)
+
+    cur_state = state.get_state(wa_id)
+
+    if cur_state.get("phase") == "lesson":
+        await whatsapp.send_buttons(
+            wa_id,
+            "Back to your lesson - tap below when you are ready.",
+            [{"id": READY_QUIZ, "title": "Ready for Quiz"}],
+        )
+    elif cur_state.get("phase") == "quiz":
+        await send_quiz(wa_id)
+    elif cur_state.get("phase") == "complete":
+        await whatsapp.send_text(
+            wa_id,
+            "You already finished Unit 1! Type 'hi' to start again or ask anything.",
+        )
