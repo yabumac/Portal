@@ -7,8 +7,6 @@ from fastapi.responses import HTMLResponse
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
-# Vercel automatically sets VERCEL_URL; defaults to request host if not present
-VERCEL_PROJECT_URL = os.getenv("VERCEL_URL", "")
 
 COURSES = {
     "mod_1": {
@@ -43,54 +41,55 @@ COURSES = {
     }
 }
 
-# 5-Step Diagnostic Questionnaire
 QUESTIONS = [
-    "Q1/5: Which primary language do you use most while teaching? (e.g., English, Amharic, Afaan Oromo)",
-    "Q2/5: What main teaching materials do you have in class? (e.g., Textbooks, Digital devices, Blackboard only)",
+    "Q1/5: Which language do you primarily use in your classroom? (e.g., English, Amharic, Afaan Oromo)",
+    "Q2/5: What main teaching materials do you have available? (e.g., Textbooks, Digital devices, Blackboard only)",
     "Q3/5: What reading or skill level are most of your students at? (e.g., Beginners, Intermediate, Advanced)",
-    "Q4/5: What is your primary classroom challenge right now? (e.g., Large class size, Engagement, Materials)",
+    "Q4/5: What is your primary classroom challenge right now? (e.g., Large class size, Engagement, Lack of materials)",
     "Q5/5: How many years of teaching experience do you have? (e.g., 0-2 years, 3-5 years, 5+ years)"
 ]
 
-# Simple in-memory session tracking for active user steps
 USER_SESSIONS = {}
 
 app = FastAPI()
 
-# --- EMBEDDED HTML WRAPPER PLAYER ---
+# --- FLAWLESS HTML WRAPPER PLAYER (Supports all Vercel path variations) ---
 @app.get("/learn", response_class=HTMLResponse)
+@app.get("/api/learn", response_class=HTMLResponse)
+@app.get("/api/index.py/learn", response_class=HTMLResponse)
 async def serve_course_player(mod: str = "mod_1"):
-    """Serves the Mindsmith course cleanly inside an iframe without exposing the URL."""
+    """Serves the Mindsmith course seamlessly inside a full-height web frame."""
     course_url = COURSES.get(mod, COURSES["mod_1"])["url"]
     
-    html_content = f"""
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <title>EdTech Hub - Online Course</title>
-        <style>
-            html, body {{
-                margin: 0;
-                padding: 0;
-                width: 100%;
-                height: 100%;
-                overflow: hidden;
-                background-color: #000000;
-            }}
-            iframe {{
-                width: 100%;
-                height: 100%;
-                border: none;
-            }}
-        </style>
-    </head>
-    <body>
-        <iframe src="{course_url}" allow="autoplay; fullscreen" allowfullscreen></iframe>
-    </body>
-    </html>
-    """
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Learning Portal</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        html, body {{
+            width: 100%;
+            height: 100%;
+            height: 100dvh;
+            overflow: hidden;
+            background-color: #0f172a;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }}
+        iframe {{
+            width: 100%;
+            height: 100%;
+            height: 100dvh;
+            border: 0;
+            display: block;
+        }}
+    </style>
+</head>
+<body>
+    <iframe src="{course_url}" allow="autoplay; fullscreen; microphone; camera; display-capture" allowfullscreen></iframe>
+</body>
+</html>"""
     return HTMLResponse(content=html_content)
 
 # --- WEBHOOK VERIFICATION (GET) ---
@@ -129,49 +128,40 @@ async def webhook_handler(request: Request):
                     from_number = incoming_msg.get("from")
                     msg_type = incoming_msg.get("type")
 
-                    # Handle List Reply Selection (Course Picked)
+                    # Handle Course List Selection (Triggers Final CTA Button)
                     if msg_type == "interactive":
                         interactive = incoming_msg.get("interactive", {})
                         if interactive.get("type") == "list_reply":
                             selected_id = interactive.get("list_reply", {}).get("id")
                             if selected_id in COURSES:
-                                # Start Questionnaire Flow
-                                USER_SESSIONS[from_number] = {
-                                    "selected_mod": selected_id,
-                                    "step": 0
-                                }
-                                course_info = COURSES[selected_id]
-                                intro_text = f"You selected *{course_info['title']}: {course_info['name']}*.\n\nTo tailor your experience, please answer 5 brief questions:\n\n{QUESTIONS[0]}"
-                                await send_text_message(from_number, intro_text)
+                                course_data = COURSES[selected_id]
+                                
+                                # Dynamically construct wrapper URL using current host
+                                host = request.headers.get("host") or os.getenv("VERCEL_URL", "")
+                                if host and not host.startswith("http"):
+                                    host = f"https://{host}"
+                                
+                                wrapper_url = f"{host}/api/learn?mod={selected_id}"
+                                await send_completion_button(from_number, course_data, wrapper_url)
                                 return {"status": "ok"}
 
-                    # Handle Text Replies during Questionnaire Flow
+                    # Handle Text Inputs & Questionnaire Steps
                     if from_number in USER_SESSIONS:
                         session = USER_SESSIONS[from_number]
                         current_step = session["step"] + 1
 
                         if current_step < len(QUESTIONS):
-                            # Move to next question
                             session["step"] = current_step
-                            reply_text = f"Thank you.\n\n{QUESTIONS[current_step]}"
-                            await send_text_message(from_number, reply_text)
+                            await send_text_message(from_number, f"Thank you.\n\n{QUESTIONS[current_step]}")
                         else:
-                            # Questionnaire Completed: Send Wrapper CTA Button
-                            mod_id = session["selected_mod"]
-                            course_data = COURSES[mod_id]
-                            
-                            # Construct local Vercel wrapper URL
-                            host_url = VERCEL_PROJECT_URL
-                            if not host_url.startswith("http"):
-                                host_url = f"https://{host_url}" if host_url else str(request.base_url).rstrip('/')
-                            
-                            wrapper_url = f"{host_url}/learn?mod={mod_id}"
-                            
-                            del USER_SESSIONS[from_number] # Clear state
-                            await send_completion_button(from_number, course_data, wrapper_url)
+                            # Finished all 5 questions -> Clear session & show Course Menu
+                            del USER_SESSIONS[from_number]
+                            await send_interactive_list(from_number)
                     else:
-                        # Direct menu presentation for new or reset conversations
-                        await send_interactive_list(from_number)
+                        # First interaction (e.g. saying "hi"): Start Questionnaire Q1
+                        USER_SESSIONS[from_number] = {"step": 0}
+                        intro_text = f"Welcome! Before we begin, please answer 5 brief questions to help us tailor your experience:\n\n{QUESTIONS[0]}"
+                        await send_text_message(from_number, intro_text)
 
     except Exception as e:
         print(f"Error handling webhook: {e}")
@@ -201,8 +191,8 @@ async def send_interactive_list(to_number: str):
         "type": "interactive",
         "interactive": {
             "type": "list",
-            "header": {"type": "text", "text": "Learning Hub"},
-            "body": {"text": "Select a module to begin your questionnaire and course:"},
+            "header": {"type": "text", "text": "🎉 Diagnostic Complete!"},
+            "body": {"text": "Thank you for completing the assessment! Select a course module below to begin learning:"},
             "footer": {"text": "EdTech Hub ET"},
             "action": {
                 "button": "Select Module",
@@ -222,12 +212,12 @@ async def send_completion_button(to_number: str, course: dict, wrapper_url: str)
         "type": "interactive",
         "interactive": {
             "type": "cta_url",
-            "header": {"type": "text", "text": " Diagnostic Assessment Complete!"},
-            "body": {"text": f"Thank you for completing the questions for *{course['title']}: {course['name']}*. Tap below to start learning:"},
+            "header": {"type": "text", "text": f"📘 {course['title']}: {course['name']}"},
+            "body": {"text": "Tap the button below to launch the module:"},
             "action": {
                 "name": "cta_url",
                 "parameters": {
-                    "display_text": " Launch Course",
+                    "display_text": "🚀 Launch Course",
                     "url": wrapper_url
                 }
             }
