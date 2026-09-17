@@ -1,7 +1,7 @@
 """
 bot/state.py
 
-User state + course progression.
+User state + course progression + mode tracking.
 
 Storage layer
 -------------
@@ -16,30 +16,25 @@ Swap ONLY the three storage functions (get_state / set_state / del_state) with
 a real database - for example Upstash Redis or Supabase. Keep the same
 signatures and every caller above the storage layer works unchanged.
 
-    # example: Redis (Upstash)
-    import os, json, redis
-    _r = redis.from_url(os.getenv("UPSTASH_REDIS_REST_URL"))
-    def get_state(wa_id):
-        raw = _r.get(f"user:{wa_id}")
-        return json.loads(raw) if raw else IDLE_STATE.copy()
-    def set_state(wa_id, state):
-        _r.set(f"user:{wa_id}", json.dumps(state))
-    def del_state(wa_id):
-        _r.delete(f"user:{wa_id}")
-
 State shape
 -----------
     {
-        "phase": "idle" | "lesson" | "quiz" | "complete",
-        "unit_id": str | None,       # e.g. "unit_1"
-        "lesson_index": int | None,  # index into curriculum.list_lessons(unit_id)
+        "phase":           "idle" | "lesson" | "quiz" | "tutor" | "assessment" | "complete",
+        "unit_id":         str | None,
+        "lesson_index":    int | None,        # index into curriculum.list_lessons(unit_id)
+        "tutor_resume":    str | None,        # phase before entering tutor ("lesson"/"quiz"/"idle")
+        "tutor_lesson":    str | None,        # lesson id context for the tutor
+        "assessment_index":    int | None,    # next question index
+        "assessment_answers":  dict | None,   # {question_id: "A"/"B"/"C"}
     }
 
 Phases:
-    idle      no course running; free text goes to the AI Tutor
-    lesson    lesson text just delivered; awaiting "Ready for Quiz?"
-    quiz      quiz question on screen; awaiting answer button (A/B/C)
-    complete  unit finished; user can restart or ask the AI Tutor
+    idle        no course active; free text goes to the AI Tutor (full course context)
+    lesson      lesson just delivered; user sees Ask AI / Continue buttons
+    quiz        quiz on screen; awaiting answer button (A/B/C)
+    tutor       AI tutor mode active; free text goes to AI with parsed context
+    assessment  self-assessment mini-form running
+    complete    unit finished; user can restart or enter tutor
 """
 
 import copy
@@ -49,14 +44,21 @@ from content import curriculum
 
 logger = logging.getLogger("whatsapp_bot")
 
-# --- Storage layer: swap for Redis/Supabase in production (see docstring) ---
+# --- Storage layer -----------------------------------------------------------
 USER_STATE: dict = {}
 
-IDLE_STATE = {"phase": "idle", "unit_id": None, "lesson_index": None}
+IDLE_STATE = {
+    "phase": "idle",
+    "unit_id": None,
+    "lesson_index": None,
+    "tutor_resume": None,
+    "tutor_lesson": None,
+    "assessment_index": None,
+    "assessment_answers": None,
+}
 
 
 def get_state(wa_id: str) -> dict:
-    """Return a copy of the user's state (never a live reference)."""
     state = USER_STATE.get(wa_id)
     return copy.deepcopy(state) if state else copy.deepcopy(IDLE_STATE)
 
@@ -69,21 +71,26 @@ def del_state(wa_id: str) -> None:
     USER_STATE.pop(wa_id, None)
 
 
-# --- Progression helpers -----------------------------------------------------
+# --- Course progression ------------------------------------------------------
 
 def start_unit(wa_id: str, unit_id: str) -> dict:
     """Reset a user into the first lesson of a unit."""
     state = get_state(wa_id)
-    state.update({"phase": "lesson", "unit_id": unit_id, "lesson_index": 0})
+    state.update({
+        "phase": "lesson",
+        "unit_id": unit_id,
+        "lesson_index": 0,
+        "tutor_resume": None,
+        "tutor_lesson": None,
+        "assessment_index": None,
+        "assessment_answers": None,
+    })
     set_state(wa_id, state)
     return state
 
 
 def current_lesson(state: dict):
-    """
-    Return the lesson dict the user is currently on, or None.
-    Only valid while a course is active (phase lesson/quiz).
-    """
+    """Return the lesson dict the user is currently on, or None."""
     phase = state.get("phase")
     if phase not in ("lesson", "quiz"):
         return None
@@ -98,7 +105,6 @@ def current_lesson(state: dict):
 
 
 def open_quiz(wa_id: str) -> dict:
-    """Move the user into the quiz phase (awaits an A/B/C answer)."""
     state = get_state(wa_id)
     state["phase"] = "quiz"
     set_state(wa_id, state)
@@ -112,7 +118,7 @@ def advance_past_lesson(wa_id: str):
 
     Returns:
         ("lesson", lesson_dict) when more lessons remain.
-        ("complete", None) when the unit is finished (phase -> "complete").
+        ("complete", None) when the unit is finished.
     """
     state = get_state(wa_id)
     lesson_ids = curriculum.list_lessons(state.get("unit_id"))
@@ -127,6 +133,97 @@ def advance_past_lesson(wa_id: str):
     set_state(wa_id, state)
     return "complete", None
 
+
+# --- Tutor mode --------------------------------------------------------------
+
+def enter_tutor(wa_id: str, lesson_id: str = None) -> dict:
+    """
+    Enter tutor mode. Saves the phase we should return to when exiting.
+    If lesson_id is provided the tutor gets that lesson's context.
+    """
+    state = get_state(wa_id)
+    resume = state.get("phase", "idle")
+    if resume not in ("lesson", "quiz"):
+        resume = "idle"
+    state.update({
+        "phase": "tutor",
+        "tutor_resume": resume,
+        "tutor_lesson": lesson_id,
+    })
+    set_state(wa_id, state)
+    return state
+
+
+def exit_tutor(wa_id: str) -> str:
+    """
+    Exit tutor mode and return the phase to restore ("lesson", "quiz", or
+    "idle").
+    """
+    state = get_state(wa_id)
+    resume = state.get("tutor_resume", "idle")
+    state.update({
+        "phase": resume,
+        "tutor_resume": None,
+        "tutor_lesson": None,
+    })
+    set_state(wa_id, state)
+    return state["phase"]
+
+
+# --- Self-Assessment ---------------------------------------------------------
+
+def start_assessment(wa_id: str) -> dict:
+    state = get_state(wa_id)
+    state.update({
+        "phase": "assessment",
+        "assessment_index": 0,
+        "assessment_answers": {},
+        "tutor_resume": None,
+        "tutor_lesson": None,
+    })
+    set_state(wa_id, state)
+    return state
+
+
+def assessment_index(wa_id: str) -> int:
+    state = get_state(wa_id)
+    return state.get("assessment_index", 0)
+
+
+def record_assessment_answer(wa_id: str, question_id: str, letter: str) -> dict:
+    """
+    Record a single assessment answer.
+
+    Returns:
+        {"done": bool, "answers": dict}
+    """
+    state = get_state(wa_id)
+    answers = state.get("assessment_answers") or {}
+    answers[question_id] = letter
+    next_index = state.get("assessment_index", 0) + 1
+    done = next_index >= len(curriculum.ASSESSMENT)
+    state.update({
+        "assessment_answers": answers,
+        "assessment_index": next_index,
+    })
+    if done:
+        state["phase"] = "idle"
+    set_state(wa_id, state)
+    return {"done": done, "answers": answers}
+
+
+def abort_assessment(wa_id: str) -> None:
+    """Exit the assessment back to idle."""
+    state = get_state(wa_id)
+    state.update({
+        "phase": "idle",
+        "assessment_index": None,
+        "assessment_answers": None,
+    })
+    set_state(wa_id, state)
+
+
+# --- Reset -------------------------------------------------------------------
 
 def reset(wa_id: str) -> None:
     """Delete all progress for a user."""

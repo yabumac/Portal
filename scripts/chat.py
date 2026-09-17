@@ -7,15 +7,17 @@ Run (from the project folder):
     python scripts/chat.py
 
 Then just type messages like you would in WhatsApp:
-    hi                     -> opens the menu (Start Unit 1 / Ask AI Tutor)
-    start_unit_1           -> starts the course (type this after 'hi')
-    quiz_ready             -> confirm you are ready for the quiz
-    A or B or C            -> answer a quiz question
-    any other text         -> goes to the AI Tutor (falls back to a canned
-                              reply unless you have a GEMINI_API_KEY set)
+    hi                     -> opens the intro menu (video + Enroll / Ask AI Tutor / AI Self-Assessment)
+    enroll                 -> starts the AI for Educators course
+    continue               -> after a lesson, continue to the quiz (or tap the button)
+    A or B or C            -> answer a quiz / assessment question
+    ask_ai_tutor           -> enter AI Tutor mode (with the current lesson context)
+    exit                   -> leave AI Tutor mode
+    ai_assess              -> start the AI Self-Assessment form
+    any other text         -> goes to the AI Tutor (falls back to a canned reply unless you have a GEMINI_API_KEY set)
 
-When the bot shows buttons, type the id shown in square brackets (or the
-label). Type 'q' to quit. The bot replies are printed here instead of being
+When the bot shows buttons, just type the label you would tap in WhatsApp.
+Type 'q' to quit. The bot replies are printed here instead of being
 sent to real WhatsApp, so this NEVER contacts Meta and needs no credentials.
 """
 
@@ -67,15 +69,21 @@ async def fake_send_list(*args, **kwargs):
     return None
 
 
-async def fake_tutor(question):
+async def fake_tutor(question, section=""):
+    if section:
+        return (f"(canned local answer - set GEMINI_API_KEY to get real answers) "
+                f"The current lesson block I parsed: {section[:140]}... "
+                f"Asked: {question}")
     return ("(canned local answer - set GEMINI_API_KEY to get real answers) "
-            f"You asked: {question} - in Unit 1, digital literacy means using "
-            "technology to find, evaluate, create and communicate information.")
+            f"You asked: {question} - in the AI for Educators course, AI helps "
+            "teachers with drafting lessons, generating ideas and giving "
+            "feedback, while the teacher stays in charge.")
 
 
 def print_bot_turn():
     global last_turn_buttons
-    last_turn_buttons = []
+    if outbox:
+        last_turn_buttons = []
     for item in outbox:
         kind = item[0]
         if kind == "text":
@@ -161,8 +169,9 @@ def main():
     print(" WhatsApp Learning Bot - local playground")
     print(" Type 'hi' to start the conversation.")
     print(" When the bot offers buttons, just type the button label.")
-    print(" Try: 'start_unit_1', 'quiz_ready', 'A', 'B', 'C'")
-    print(" Free text (any question) -> AI Tutor.  'q' quits.")
+    print(" Try: 'enroll', 'ask_ai_tutor', 'ai_assess', 'continue', 'A', 'B', 'C'")
+    print(" Free text (any question) -> AI Tutor.  'exit' leaves Tutor mode.")
+    print(" Type 'q' to quit the playground.")
     print("=" * 64)
 
     patches = [
@@ -183,7 +192,7 @@ def main():
                 print("\nBye!")
                 return
 
-            if raw.lower() in ("q", "quit", "exit"):
+            if raw.lower() in ("q", "quit", ":q"):
                 print("Bye!")
                 return
 
