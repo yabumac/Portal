@@ -1,44 +1,13 @@
-"""
+﻿"""
 bot/state.py
 
-User state + course progression + mode tracking.
-
-Storage layer
--------------
-USER_STATE is a plain in-memory dict keyed by WhatsApp id. This works for a
-single-function process (local dev). Vercel serverless functions are stateless
-and can cold-start between requests, so the in-memory dict can lose progress
-at any time.
-
-Production upgrade
-------------------
-Swap ONLY the three storage functions (get_state / set_state / del_state) with
-a real database - for example Upstash Redis or Supabase. Keep the same
-signatures and every caller above the storage layer works unchanged.
-
-State shape
------------
-    {
-        "phase":           "idle" | "lesson" | "quiz" | "tutor" | "assessment" | "complete",
-        "unit_id":         str | None,
-        "lesson_index":    int | None,        # index into curriculum.list_lessons(unit_id)
-        "tutor_resume":    str | None,        # phase before entering tutor ("lesson"/"quiz"/"idle")
-        "tutor_lesson":    str | None,        # lesson id context for the tutor
-        "assessment_index":    int | None,    # next question index
-        "assessment_answers":  dict | None,   # {question_id: "A"/"B"/"C"}
-    }
-
-Phases:
-    idle        no course active; free text goes to the AI Tutor (full course context)
-    lesson      lesson just delivered; user sees Ask AI / Continue buttons
-    quiz        quiz on screen; awaiting answer button (A/B/C)
-    tutor       AI tutor mode active; free text goes to AI with parsed context
-    assessment  self-assessment mini-form running
-    complete    unit finished; user can restart or enter tutor
+User state + course progression + mode tracking with persistent storage.
 """
 
 import copy
+import json
 import logging
+import os
 
 from content import curriculum
 
@@ -46,6 +15,87 @@ logger = logging.getLogger("whatsapp_bot")
 
 # --- Storage layer -----------------------------------------------------------
 USER_STATE: dict = {}
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+USERS_FILE = os.path.join(DATA_DIR, "users.json")
+TMP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tmp")
+TMP_USERS_FILE = os.path.join(TMP_DIR, "users.json")
+# Also try /tmp for serverless environments (Vercel, etc.)
+SYSTEM_TMP = os.environ.get("TMPDIR") or os.environ.get("TEMP") or os.environ.get("TMP") or "/tmp"
+SYSTEM_TMP_USERS_FILE = os.path.join(SYSTEM_TMP, "whatsapp_bot_users.json") if SYSTEM_TMP else None
+
+
+def _ensure_data_dir():
+    for d in (DATA_DIR, TMP_DIR):
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+
+
+def _load_from_path(path: str):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return None
+
+
+def _load_all() -> dict:
+    _ensure_data_dir()
+    # Try multiple locations in order of preference
+    for candidate in (USERS_FILE, TMP_USERS_FILE, SYSTEM_TMP_USERS_FILE):
+        if not candidate:
+            continue
+        data = _load_from_path(candidate)
+        if not data:
+            continue
+        if isinstance(data.get("users"), dict):
+            return data
+        elif isinstance(data, dict) and data and all(isinstance(v, dict) for v in data.values()):
+            return {"users": data}
+    return {}
+
+
+def _save_to_path(path: str, data: dict) -> bool:
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to save to {path}: {e}")
+        return False
+
+
+def _save_all(data: dict) -> None:
+    _ensure_data_dir()
+    saved = False
+    for candidate in (USERS_FILE, TMP_USERS_FILE, SYSTEM_TMP_USERS_FILE):
+        if not candidate:
+            continue
+        if _save_to_path(candidate, data):
+            saved = True
+    if not saved:
+        logger.warning("Failed to persist user state to any location")
+
+
+# Initialize from disk
+try:
+    _disk_state = _load_all()
+    if isinstance(_disk_state.get("users"), dict):
+        USER_STATE = _disk_state["users"]
+    elif isinstance(_disk_state, dict) and _disk_state and all(isinstance(v, dict) for v in _disk_state.values()):
+        USER_STATE = _disk_state
+    else:
+        USER_STATE = {}
+except Exception:
+    USER_STATE = {}
+
 
 IDLE_STATE = {
     "phase": "idle",
@@ -60,21 +110,56 @@ IDLE_STATE = {
 
 def get_state(wa_id: str) -> dict:
     state = USER_STATE.get(wa_id)
-    return copy.deepcopy(state) if state else copy.deepcopy(IDLE_STATE)
+    if state is None:
+        try:
+            all_data = _load_all()
+            users = all_data.get("users") if isinstance(all_data.get("users"), dict) else all_data
+            if isinstance(users, dict) and wa_id in users:
+                state = users[wa_id]
+                USER_STATE[wa_id] = state
+        except Exception:
+            pass
+    if state is None:
+        return copy.deepcopy(IDLE_STATE)
+    # ensure metadata
+    try:
+        if "created_at" not in state:
+            from datetime import datetime
+            state["created_at"] = datetime.utcnow().isoformat() + "Z"
+        from datetime import datetime
+        state["last_seen"] = datetime.utcnow().isoformat() + "Z"
+        USER_STATE[wa_id] = state
+    except Exception:
+        pass
+    return copy.deepcopy(state)
 
 
 def set_state(wa_id: str, state: dict) -> None:
-    USER_STATE[wa_id] = state
+    try:
+        from datetime import datetime
+        state["last_seen"] = datetime.utcnow().isoformat() + "Z"
+        if "created_at" not in state:
+            state["created_at"] = state["last_seen"]
+    except Exception:
+        pass
+    USER_STATE[wa_id] = copy.deepcopy(state)
+    try:
+        _save_all({"users": USER_STATE})
+    except Exception as e:
+        logger.warning(f"Failed to persist state for {wa_id}: {e}")
 
 
 def del_state(wa_id: str) -> None:
     USER_STATE.pop(wa_id, None)
+    try:
+        _save_all({"users": USER_STATE})
+    except Exception:
+        pass
 
 
 # --- Course progression ------------------------------------------------------
 
 def start_unit(wa_id: str, unit_id: str) -> dict:
-    """Reset a user into the first lesson of a unit."""
     state = get_state(wa_id)
     state.update({
         "phase": "lesson",
@@ -90,7 +175,6 @@ def start_unit(wa_id: str, unit_id: str) -> dict:
 
 
 def current_lesson(state: dict):
-    """Return the lesson dict the user is currently on, or None."""
     phase = state.get("phase")
     if phase not in ("lesson", "quiz"):
         return None
@@ -112,14 +196,6 @@ def open_quiz(wa_id: str) -> dict:
 
 
 def advance_past_lesson(wa_id: str):
-    """
-    Called after a correct quiz answer. Advances to the next lesson or
-    finishes the unit.
-
-    Returns:
-        ("lesson", lesson_dict) when more lessons remain.
-        ("complete", None) when the unit is finished.
-    """
     state = get_state(wa_id)
     lesson_ids = curriculum.list_lessons(state.get("unit_id"))
     next_index = state.get("lesson_index", -1) + 1
@@ -137,10 +213,6 @@ def advance_past_lesson(wa_id: str):
 # --- Tutor mode --------------------------------------------------------------
 
 def enter_tutor(wa_id: str, lesson_id: str = None) -> dict:
-    """
-    Enter tutor mode. Saves the phase we should return to when exiting.
-    If lesson_id is provided the tutor gets that lesson's context.
-    """
     state = get_state(wa_id)
     resume = state.get("phase", "idle")
     if resume not in ("lesson", "quiz"):
@@ -155,10 +227,6 @@ def enter_tutor(wa_id: str, lesson_id: str = None) -> dict:
 
 
 def exit_tutor(wa_id: str) -> str:
-    """
-    Exit tutor mode and return the phase to restore ("lesson", "quiz", or
-    "idle").
-    """
     state = get_state(wa_id)
     resume = state.get("tutor_resume", "idle")
     state.update({
@@ -191,12 +259,6 @@ def assessment_index(wa_id: str) -> int:
 
 
 def record_assessment_answer(wa_id: str, question_id: str, letter: str) -> dict:
-    """
-    Record a single assessment answer.
-
-    Returns:
-        {"done": bool, "answers": dict}
-    """
     state = get_state(wa_id)
     answers = state.get("assessment_answers") or {}
     answers[question_id] = letter
@@ -213,7 +275,6 @@ def record_assessment_answer(wa_id: str, question_id: str, letter: str) -> dict:
 
 
 def abort_assessment(wa_id: str) -> None:
-    """Exit the assessment back to idle."""
     state = get_state(wa_id)
     state.update({
         "phase": "idle",
@@ -223,8 +284,18 @@ def abort_assessment(wa_id: str) -> None:
     set_state(wa_id, state)
 
 
-# --- Reset -------------------------------------------------------------------
+# --- Reset / Admin helpers ---------------------------------------------------
 
 def reset(wa_id: str) -> None:
-    """Delete all progress for a user."""
     del_state(wa_id)
+
+
+def get_all_users() -> dict:
+    try:
+        all_data = _load_all()
+        users = all_data.get("users") if isinstance(all_data.get("users"), dict) else all_data
+        if isinstance(users, dict):
+            return copy.deepcopy(users)
+    except Exception:
+        pass
+    return copy.deepcopy(USER_STATE)

@@ -559,3 +559,63 @@ async def ask_restart(wa_id: str) -> None:
         ],
         footer="Tap to start",
     )
+
+# --- Admin dashboard routes ---------------------------------------------------
+try:
+    from api import admin
+    app.mount("/admin", admin.app)
+    app.mount("/dashboard", admin.app)
+except Exception as e:
+    logger.warning(f"Failed to mount admin: {e}")
+    try:
+        from fastapi import Request
+        from fastapi.responses import HTMLResponse, JSONResponse
+        import json as _json
+
+        @app.get("/admin")
+        @app.get("/dashboard")
+        async def admin_dashboard_fallback(request: Request):
+            from bot import state
+            password = request.query_params.get("password") or request.query_params.get("pass")
+            ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
+            if ADMIN_PASSWORD and password != ADMIN_PASSWORD:
+                html = """<!DOCTYPE html><html><head><title>Admin Login</title><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+                <body style="font-family:sans-serif;max-width:400px;margin:40px auto;"><h2>Admin Login</h2>
+                <form method="get"><input type="password" name="password" placeholder="Password" style="width:100%;padding:8px;">
+                <button type="submit" style="margin-top:10px;padding:8px 16px;">Login</button></form></body></html>"""
+                return HTMLResponse(content=html, status_code=401)
+            users = state.get_all_users()
+            rows_html = ""
+            for wa_id, s in users.items():
+                phase = s.get("phase", "unknown")
+                unit = s.get("unit_id") or "-"
+                lesson_idx = s.get("lesson_index")
+                lesson_info = "-"
+                if lesson_idx is not None and unit:
+                    try:
+                        from content import curriculum
+                        lessons = curriculum.list_lessons(unit)
+                        if lesson_idx < len(lessons):
+                            lesson_info = f"{lesson_idx+1}/{len(lessons)} ({lessons[lesson_idx]})"
+                    except Exception:
+                        pass
+                reset_id = request.query_params.get("reset")
+                if reset_id == wa_id and password == ADMIN_PASSWORD:
+                    try:
+                        state.reset(reset_id)
+                    except Exception:
+                        pass
+                rows_html += f"""<tr><td style="padding:8px;border:1px solid #ddd;font-family:monospace;">{wa_id}</td>
+                <td style="padding:8px;border:1px solid #ddd;">{phase}</td>
+                <td style="padding:8px;border:1px solid #ddd;">{unit}</td>
+                <td style="padding:8px;border:1px solid #ddd;">{lesson_info}</td>
+                <td style="padding:8px;border:1px solid #ddd;">{_json.dumps(s.get('assessment_answers') or {})}</td>
+                <td style="padding:8px;border:1px solid #ddd;"><a href="?password={password or ''}&reset={wa_id}">Reset</a></td></tr>"""
+            html = f"""<!DOCTYPE html><html><head><title>Portal Admin Dashboard</title><meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>body{{font-family:sans-serif;margin:20px;}}table{{border-collapse:collapse;width:100%;}}th{{background:#f0f0f0;padding:8px;border:1px solid #ddd;}}</style></head>
+            <body><h1>EdTech Hub - User Progress</h1><p>Total users: {len(users)}</p>
+            <table><thead><tr><th>Phone/WA ID</th><th>Phase</th><th>Unit</th><th>Lesson</th><th>Assessment</th><th>Actions</th></tr></thead><tbody>{rows_html}</tbody></table>
+            </body></html>"""
+            return HTMLResponse(content=html)
+    except Exception as e2:
+        logger.warning(f"Failed to add fallback admin: {e2}")
