@@ -1,54 +1,43 @@
 """
 api/index.py
 
-FastAPI entry point for the WhatsApp Learning Bot (deployed on Vercel as a
-Python serverless function).
+FastAPI entry point for the WhatsApp Learning Bot (works locally and deployed
+on Vercel as a Python serverless function).
 
 Routes
 ------
-GET  /webhook  - Meta webhook verification (hub.mode / verify_token / challenge)
-POST /webhook  - Meta webhook events (all incoming user messages)
-GET  /         - health check
-
-User flows
-----------
-    'hi' / 'hello' / 'help'
-        -> Welcome text + logo video + 3 buttons: Enroll / Ask AI Tutor / AI Self-Assessment
-
-    Enroll in Course -> lesson text + media -> [Ask AI Tutor] [Continue]
-        -> quiz A/B/C -> feedback -> next lesson or unit complete
-
-    Ask AI Tutor (any phase)
-        -> enters tutor mode (current-lesson context) with [Exit] [Continue]
-
-    AI Self-Assessment (from menu)
-        -> 4 short A/B/C questions collecting teacher's AI readiness -> back to menu
-
-    Any other free text
-        -> routed to Gemini AI Tutor with current-lesson context (if applicable)
-        -> guided back to the active lesson / quiz / menu
-
-    'exit' / 'quit' / 'back' (during tutor or assessment)
-        -> returns to previous screen (lesson step, quiz, or menu)
+GET  /webhook, /api/webhook   - Meta webhook verification (hub.mode / verify_token / challenge)
+POST /webhook, /api/webhook   - Meta webhook events (all incoming user messages)
+GET  /admin, /dashboard       - Admin & Analytics Dashboard
+GET  /, /health               - Health check
 """
 
 import logging
 import os
 
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import HTMLResponse, RedirectResponse
 
-from bot import ai_tutor, state, whatsapp
+from bot import ai_tutor, db, state, whatsapp
 from content import curriculum
 
 # --- Logging (visible in Vercel Logs) ----------------------------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("whatsapp_bot")
 
+# --- Initialize DB on startup ---
+try:
+    db.init_db()
+except Exception as e:
+    logger.warning(f"DB init warning: {e}")
+
 # --- Config ------------------------------------------------------------------
-VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "local-test")
 
 # --- Button ids --------------------------------------------------------------
 ENROLL = "enroll"
+RESUME = "resume_course"
+RESTART = "restart_course"
 ASK_TUTOR = "ask_ai_tutor"
 ASSESS = "ai_assess"
 READY_QUIZ = "quiz_ready"
@@ -59,18 +48,56 @@ ASSESS_PREFIX = "assess:"
 
 GREETINGS = {"hi", "hello", "hey", "start", "help"}
 MODE_ABORT = {"exit", "quit", "back"}
-LESSON_GO = {"ready", "continue", "next", "quiz", "go"}
+LESSON_GO = {"ready", "continue", "next", "quiz", "go", "resume"}
 
-app = FastAPI()
+app = FastAPI(title="EdTech Hub Learning Bot")
+
+# --- Admin dashboard routes ---------------------------------------------------
+try:
+    from api.admin import router as admin_router, admin_dashboard
+    app.include_router(admin_router, prefix="/admin", tags=["admin"])
+    app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
+
+    @app.get("/dashboard", response_class=HTMLResponse)
+    @app.get("/dashboard/", response_class=HTMLResponse)
+    @app.get("/api/dashboard", response_class=HTMLResponse)
+    async def dashboard_view(request: Request):
+        return await admin_dashboard(request)
+except Exception as e:
+    logger.error(f"Failed to load admin router: {e}", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
-# GET: webhook verification + health check
+# Health checks
 # ---------------------------------------------------------------------------
-@app.get("/{path:path}")
-async def handle_get(request: Request, path: str = ""):
+@app.get("/")
+@app.get("/health")
+@app.get("/api")
+async def health_check(request: Request):
+    # Check if Meta sent verification request to root
     params = request.query_params
+    mode = params.get("hub.mode")
+    token = params.get("hub.verify_token")
+    challenge = params.get("hub.challenge")
+    if mode == "subscribe" and token == VERIFY_TOKEN:
+        logger.info("Webhook verified at root (%s)", mode)
+        return Response(content=challenge, media_type="text/plain")
 
+    return {
+        "status": "ok",
+        "message": "EdTech Hub WhatsApp Learning Bot is running",
+        "admin_dashboard": "/admin",
+        "docs": "/docs",
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET: webhook verification
+# ---------------------------------------------------------------------------
+@app.get("/webhook")
+@app.get("/api/webhook")
+async def webhook_verification(request: Request):
+    params = request.query_params
     mode = params.get("hub.mode")
     token = params.get("hub.verify_token")
     challenge = params.get("hub.challenge")
@@ -84,7 +111,7 @@ async def handle_get(request: Request, path: str = ""):
         return Response(content="Forbidden", media_type="text/plain", status_code=403)
 
     return Response(
-        content='{"status": "ok", "message": "WhatsApp Learning Bot running"}',
+        content='{"status": "ok", "message": "WhatsApp webhook endpoint"}',
         media_type="application/json",
     )
 
@@ -92,8 +119,10 @@ async def handle_get(request: Request, path: str = ""):
 # ---------------------------------------------------------------------------
 # POST: webhook events
 # ---------------------------------------------------------------------------
-@app.post("/{path:path}")
-async def handle_post(request: Request, path: str = ""):
+@app.post("/webhook")
+@app.post("/api/webhook")
+@app.post("/api")
+async def handle_post(request: Request):
     try:
         data = await request.json()
         logger.debug("Incoming webhook payload: %s", data)
@@ -103,13 +132,38 @@ async def handle_post(request: Request, path: str = ""):
             for change in changes:
                 value = change.get("value", {})
                 for message in value.get("messages", []) or []:
+                    # wa_id is the actual phone number of the user!
                     wa_id = message.get("from")
                     if wa_id:
-                        await handle_incoming(wa_id, message)
+                        await handle_incoming(str(wa_id), message)
     except Exception as exc:
         logger.error("Error handling webhook POST: %s", exc, exc_info=True)
 
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Catch-all GET fallback for serverless rewrites
+# ---------------------------------------------------------------------------
+@app.get("/{path:path}")
+async def catch_all_get(request: Request, path: str = ""):
+    params = request.query_params
+    mode = params.get("hub.mode")
+    token = params.get("hub.verify_token")
+    challenge = params.get("hub.challenge")
+
+    if mode == "subscribe" and token == VERIFY_TOKEN:
+        return Response(content=challenge, media_type="text/plain")
+
+    clean_path = path.strip("/").lower()
+    if clean_path in ("admin", "dashboard"):
+        from api.admin import admin_dashboard
+        return await admin_dashboard(request)
+
+    return Response(
+        content='{"status": "ok", "message": "WhatsApp Learning Bot running"}',
+        media_type="application/json",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +172,9 @@ async def handle_post(request: Request, path: str = ""):
 async def handle_incoming(wa_id: str, message: dict) -> None:
     await whatsapp.mark_as_read(message.get("id"))
     msg_type = message.get("type")
+
+    # Log user incoming interaction
+    db.log_activity(wa_id, "incoming_message", f"Type: {msg_type}")
 
     if msg_type == "text":
         await handle_text(wa_id, message.get("text", {}).get("body", "").strip())
@@ -140,7 +197,7 @@ async def handle_incoming(wa_id: str, message: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Text command router (phase-aware)
+# Text command router (phase-aware & resume-aware)
 # ---------------------------------------------------------------------------
 async def handle_text(wa_id: str, raw: str) -> None:
     text = raw.strip()
@@ -148,7 +205,7 @@ async def handle_text(wa_id: str, raw: str) -> None:
     cur = state.get_state(wa_id)
     phase = cur.get("phase")
 
-    # greetings -> full intro menu
+    # greetings -> intro or resume menu
     if low in GREETINGS:
         await send_menu(wa_id, fresh=True)
         return
@@ -180,10 +237,20 @@ async def handle_text(wa_id: str, raw: str) -> None:
         await send_assessment_question(wa_id, idx)
         return
 
-    # lesson phase: shortcut words -> continue to quiz
-    if phase == "lesson" and low in LESSON_GO:
-        await send_quiz(wa_id)
-        return
+    # lesson or resume shortcuts
+    if low in LESSON_GO:
+        if phase == "quiz":
+            await send_quiz(wa_id)
+            return
+        elif phase == "lesson":
+            await send_quiz(wa_id)
+            return
+        else:
+            # User was idle or stepped away, resume where they left off!
+            lesson = state.current_lesson(cur)
+            if lesson:
+                await deliver_lesson(wa_id, lesson)
+                return
 
     # quiz phase: letter typed -> answer
     if phase == "quiz" and low in ("a", "b", "c"):
@@ -198,9 +265,33 @@ async def handle_text(wa_id: str, raw: str) -> None:
 # Button routing
 # ---------------------------------------------------------------------------
 async def handle_button_click(wa_id: str, button_id: str) -> None:
+    db.log_activity(wa_id, "button_click", button_id)
 
-    if button_id == ENROLL:
-        state.start_unit(wa_id, curriculum.DEFAULT_UNIT_ID)
+    if button_id in (ENROLL, RESUME):
+        cur = state.get_state(wa_id)
+        # Check if user already has course progress - resume without losing state!
+        lesson_idx = cur.get("lesson_index", 0)
+        completed = cur.get("completed_lessons") or []
+
+        if (lesson_idx > 0 or len(completed) > 0) and cur.get("phase") != "complete":
+            # Resume existing course
+            state.start_unit(wa_id, curriculum.DEFAULT_UNIT_ID, restart=False)
+            lesson = state.current_lesson(state.get_state(wa_id))
+            if cur.get("phase") == "quiz":
+                await send_quiz(wa_id)
+            else:
+                await deliver_lesson(wa_id, lesson)
+            return
+
+        # Start fresh
+        state.start_unit(wa_id, curriculum.DEFAULT_UNIT_ID, restart=False)
+        lesson = state.current_lesson(state.get_state(wa_id))
+        await deliver_lesson(wa_id, lesson)
+        return
+
+    if button_id == RESTART:
+        state.start_unit(wa_id, curriculum.DEFAULT_UNIT_ID, restart=True)
+        await whatsapp.send_text(wa_id, "Course reset! Starting Module 1:")
         lesson = state.current_lesson(state.get_state(wa_id))
         await deliver_lesson(wa_id, lesson)
         return
@@ -239,28 +330,61 @@ async def handle_button_click(wa_id: str, button_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Menu / intro
+# Menu / intro (Resume-Aware!)
 # ---------------------------------------------------------------------------
 async def send_menu(wa_id: str, fresh: bool = True) -> None:
+    cur = state.get_state(wa_id)
+    phase = cur.get("phase")
+    lesson_idx = cur.get("lesson_index", 0)
+    completed = cur.get("completed_lessons") or []
+
+    # Check if user has existing progress in the course
+    has_progress = (lesson_idx > 0 or len(completed) > 0) and phase != "complete"
+
     if fresh:
-        await whatsapp.send_text(wa_id, curriculum.BOT_INTRO)
-        await whatsapp.send_media(
-            wa_id,
-            "video",
-            curriculum.INTRO_VIDEO_URL,
-            caption="EdTech Hub - AI for Educators",
-        )
+        if has_progress:
+            lesson = state.current_lesson(cur)
+            lesson_title = lesson["title"] if lesson else f"Module {lesson_idx + 1}"
+            await whatsapp.send_text(
+                wa_id,
+                f"Welcome back to EdTech Hub!\n\n"
+                f"You are currently on: {lesson_title} (Completed {len(completed)}/11 modules).\n\n"
+                f"Choose an option below to continue where you left off:",
+            )
+        else:
+            await whatsapp.send_text(wa_id, curriculum.BOT_INTRO)
+            await whatsapp.send_media(
+                wa_id,
+                "video",
+                curriculum.INTRO_VIDEO_URL,
+                caption="EdTech Hub - AI for Educators",
+            )
     else:
-        await whatsapp.send_text(wa_id, "Back to the main menu:")
+        await whatsapp.send_text(wa_id, "Main menu:")
+
+    if has_progress:
+        buttons = [
+            {"id": RESUME, "title": "Resume Course"},
+            {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
+            {"id": RESTART, "title": "Restart Course"},
+        ]
+    elif phase == "complete":
+        buttons = [
+            {"id": RESTART, "title": "Review / Restart"},
+            {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
+            {"id": ASSESS, "title": "AI Self-Assessment"},
+        ]
+    else:
+        buttons = [
+            {"id": ENROLL, "title": "Enroll in Course"},
+            {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
+            {"id": ASSESS, "title": "AI Self-Assessment"},
+        ]
 
     await whatsapp.send_buttons(
         wa_id,
         "Choose an option:",
-        [
-            {"id": ENROLL, "title": "Enroll in Course"},
-            {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
-            {"id": ASSESS, "title": "AI Self-Assessment"},
-        ],
+        buttons,
         header="EdTech Hub" if fresh else "Main Menu",
         footer="Tap an option",
     )
@@ -271,8 +395,10 @@ async def send_menu(wa_id: str, fresh: bool = True) -> None:
 # ---------------------------------------------------------------------------
 async def deliver_lesson(wa_id: str, lesson) -> None:
     if lesson is None:
-        await ask_restart(wa_id)
+        await recover_or_start(wa_id)
         return
+
+    db.log_activity(wa_id, "lesson_viewed", lesson.get("title", ""))
 
     await whatsapp.send_text(wa_id, lesson["title"])
     for paragraph in lesson["body"]:
@@ -304,12 +430,17 @@ async def send_quiz(wa_id: str) -> None:
     lesson = state.current_lesson(cur)
 
     if not lesson:
-        await ask_restart(wa_id)
+        await recover_or_start(wa_id)
         return
 
-    quiz = curriculum.get_quiz(cur["unit_id"], lesson["id"])
+    quiz = curriculum.get_quiz(cur.get("unit_id") or curriculum.DEFAULT_UNIT_ID, lesson["id"])
     if not quiz:
-        await whatsapp.send_text(wa_id, "No quiz for this lesson yet.")
+        await whatsapp.send_text(wa_id, "No quiz for this lesson. Moving forward:")
+        outcome, next_lesson = state.advance_past_lesson(wa_id)
+        if outcome == "lesson":
+            await deliver_lesson(wa_id, next_lesson)
+        else:
+            await send_menu(wa_id, fresh=False)
         return
 
     options = quiz["options"]
@@ -333,10 +464,10 @@ async def handle_quiz_answer(wa_id: str, answer: str) -> None:
     lesson = state.current_lesson(cur)
 
     if not lesson:
-        await ask_restart(wa_id)
+        await recover_or_start(wa_id)
         return
 
-    unit_id = cur["unit_id"]
+    unit_id = cur.get("unit_id") or curriculum.DEFAULT_UNIT_ID
     lesson_id = lesson["id"]
 
     if not curriculum.is_valid_option(unit_id, lesson_id, answer):
@@ -347,8 +478,11 @@ async def handle_quiz_answer(wa_id: str, answer: str) -> None:
     result = curriculum.check_answer(unit_id, lesson_id, answer)
     explanation = result["explanation"]
 
+    # Record result in state and activity log
+    state.record_quiz_result(wa_id, lesson_id, answer, result["correct"])
+
     if result["correct"]:
-        await whatsapp.send_text(wa_id, f"Correct! {explanation} Moving on to the next lesson.")
+        await whatsapp.send_text(wa_id, f"Correct! {explanation} Moving on to the next module.")
     else:
         await whatsapp.send_text(
             wa_id,
@@ -362,13 +496,13 @@ async def handle_quiz_answer(wa_id: str, answer: str) -> None:
     if outcome == "lesson":
         await deliver_lesson(wa_id, next_lesson)
     else:
-        unit = curriculum.get_unit(cur["unit_id"])
+        unit = curriculum.get_unit(unit_id)
         await whatsapp.send_text(wa_id, unit["complete_message"])
         await send_menu(wa_id, fresh=False)
 
 
 # ---------------------------------------------------------------------------
-# AI Tutor mode (in-course and full-conversation)
+# AI Tutor mode
 # ---------------------------------------------------------------------------
 async def enter_tutor_flow(wa_id: str) -> None:
     cur = state.get_state(wa_id)
@@ -405,6 +539,7 @@ async def tutor_chat(wa_id: str, question: str) -> None:
 
     section = curriculum.lesson_as_context(unit_id, lesson_id) if unit_id and lesson_id else ""
 
+    db.log_activity(wa_id, "tutor_query", question[:80])
     answer = await ai_tutor.answer_question(question, section=section)
     await whatsapp.send_text(wa_id, answer)
 
@@ -420,7 +555,7 @@ async def tutor_chat(wa_id: str, question: str) -> None:
 async def exit_tutor_flow(wa_id: str) -> None:
     """Exit tutor and return to the previous screen."""
     cur = state.get_state(wa_id)
-    unit_id = cur.get("unit_id")
+    unit_id = cur.get("unit_id") or curriculum.DEFAULT_UNIT_ID
     resume_lesson_id = cur.get("tutor_lesson")
     resume = state.exit_tutor(wa_id)
 
@@ -437,7 +572,6 @@ async def exit_tutor_flow(wa_id: str) -> None:
                 footer="Ask a question or continue to the quiz",
             )
             return
-        state.start_unit(wa_id, unit_id)
         l2 = state.current_lesson(state.get_state(wa_id))
         await deliver_lesson(wa_id, l2)
         return
@@ -450,7 +584,6 @@ async def exit_tutor_flow(wa_id: str) -> None:
 
 
 async def resume_from_tutor(wa_id: str) -> None:
-    """Exit tutor and go back to lesson step buttons (Continue + Ask AI)."""
     await exit_tutor_flow(wa_id)
 
 
@@ -495,7 +628,7 @@ async def handle_assessment_answer(wa_id: str, letter: str) -> None:
     if result["done"]:
         await whatsapp.send_text(
             wa_id,
-            "Thank you for completing the AI Self-Assessment! "
+            "Thank you for completing the AI Self-Assessment!\n\n"
             "Based on your answers, the AI for Educators course is a great place to start. "
             "Ready to begin?",
         )
@@ -521,6 +654,7 @@ async def handle_ai_fallback(wa_id: str, question: str) -> None:
         section = curriculum.quiz_as_context(unit_id, lesson["id"])
 
     logger.info("AI fallback (%s) phase=%s: %s", wa_id, phase, question[:120])
+    db.log_activity(wa_id, "free_text_ai", question[:80])
     answer = await ai_tutor.answer_question(question, section=section)
     await whatsapp.send_text(wa_id, answer)
 
@@ -538,84 +672,33 @@ async def handle_ai_fallback(wa_id: str, question: str) -> None:
     elif phase == "complete":
         await whatsapp.send_text(
             wa_id,
-            "You already finished Unit 1! Type 'hi' to restart or ask anything.",
+            "You already finished Unit 1! Type 'hi' to review lessons or ask anything.",
         )
 
 
 # ---------------------------------------------------------------------------
-# Restart helper (cold-start / lost state)
+# Graceful state recovery (database backed)
 # ---------------------------------------------------------------------------
-async def ask_restart(wa_id: str) -> None:
-    await whatsapp.send_text(
-        wa_id,
-        "It looks like your progress was reset (this server doesn't have "
-        "a database yet). Tap below to start the course again.",
-    )
-    await whatsapp.send_buttons(
-        wa_id, "Start the AI for Educators course?",
-        [
-            {"id": ENROLL, "title": "Enroll in Course"},
-            {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
-        ],
-        footer="Tap to start",
-    )
+async def recover_or_start(wa_id: str) -> None:
+    """Seamlessly load user progress from database without resetting."""
+    cur = state.get_state(wa_id)
+    if cur.get("phase") == "complete":
+        await whatsapp.send_text(
+            wa_id,
+            "You have already completed the course! Type 'hi' to review or ask questions.",
+        )
+        await send_menu(wa_id, fresh=False)
+        return
 
-# --- Admin dashboard routes ---------------------------------------------------
-try:
-    from api import admin
-    app.mount("/admin", admin.app)
-    app.mount("/dashboard", admin.app)
-except Exception as e:
-    logger.warning(f"Failed to mount admin: {e}")
-    try:
-        from fastapi import Request
-        from fastapi.responses import HTMLResponse, JSONResponse
-        import json as _json
-
-        @app.get("/admin")
-        @app.get("/dashboard")
-        async def admin_dashboard_fallback(request: Request):
-            from bot import state
-            password = request.query_params.get("password") or request.query_params.get("pass")
-            ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
-            if ADMIN_PASSWORD and password != ADMIN_PASSWORD:
-                html = """<!DOCTYPE html><html><head><title>Admin Login</title><meta name="viewport" content="width=device-width, initial-scale=1"></head>
-                <body style="font-family:sans-serif;max-width:400px;margin:40px auto;"><h2>Admin Login</h2>
-                <form method="get"><input type="password" name="password" placeholder="Password" style="width:100%;padding:8px;">
-                <button type="submit" style="margin-top:10px;padding:8px 16px;">Login</button></form></body></html>"""
-                return HTMLResponse(content=html, status_code=401)
-            users = state.get_all_users()
-            rows_html = ""
-            for wa_id, s in users.items():
-                phase = s.get("phase", "unknown")
-                unit = s.get("unit_id") or "-"
-                lesson_idx = s.get("lesson_index")
-                lesson_info = "-"
-                if lesson_idx is not None and unit:
-                    try:
-                        from content import curriculum
-                        lessons = curriculum.list_lessons(unit)
-                        if lesson_idx < len(lessons):
-                            lesson_info = f"{lesson_idx+1}/{len(lessons)} ({lessons[lesson_idx]})"
-                    except Exception:
-                        pass
-                reset_id = request.query_params.get("reset")
-                if reset_id == wa_id and password == ADMIN_PASSWORD:
-                    try:
-                        state.reset(reset_id)
-                    except Exception:
-                        pass
-                rows_html += f"""<tr><td style="padding:8px;border:1px solid #ddd;font-family:monospace;">{wa_id}</td>
-                <td style="padding:8px;border:1px solid #ddd;">{phase}</td>
-                <td style="padding:8px;border:1px solid #ddd;">{unit}</td>
-                <td style="padding:8px;border:1px solid #ddd;">{lesson_info}</td>
-                <td style="padding:8px;border:1px solid #ddd;">{_json.dumps(s.get('assessment_answers') or {})}</td>
-                <td style="padding:8px;border:1px solid #ddd;"><a href="?password={password or ''}&reset={wa_id}">Reset</a></td></tr>"""
-            html = f"""<!DOCTYPE html><html><head><title>Portal Admin Dashboard</title><meta name="viewport" content="width=device-width, initial-scale=1">
-            <style>body{{font-family:sans-serif;margin:20px;}}table{{border-collapse:collapse;width:100%;}}th{{background:#f0f0f0;padding:8px;border:1px solid #ddd;}}</style></head>
-            <body><h1>EdTech Hub - User Progress</h1><p>Total users: {len(users)}</p>
-            <table><thead><tr><th>Phone/WA ID</th><th>Phase</th><th>Unit</th><th>Lesson</th><th>Assessment</th><th>Actions</th></tr></thead><tbody>{rows_html}</tbody></table>
-            </body></html>"""
-            return HTMLResponse(content=html)
-    except Exception as e2:
-        logger.warning(f"Failed to add fallback admin: {e2}")
+    # Check if there is a valid lesson
+    lesson = state.current_lesson(cur)
+    if lesson:
+        await deliver_lesson(wa_id, lesson)
+    else:
+        # Start unit but do not wipe any quiz answers
+        state.start_unit(wa_id, curriculum.DEFAULT_UNIT_ID, restart=False)
+        l2 = state.current_lesson(state.get_state(wa_id))
+        if l2:
+            await deliver_lesson(wa_id, l2)
+        else:
+            await send_menu(wa_id, fresh=False)

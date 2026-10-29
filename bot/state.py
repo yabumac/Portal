@@ -1,212 +1,176 @@
-﻿"""
+"""
 bot/state.py
 
-User state + course progression + mode tracking with persistent storage.
+User state + course progression + mode tracking with persistent database storage.
+Keyed by actual phone number (wa_id) received from WhatsApp.
 """
 
 import copy
-import json
 import logging
-import os
+from typing import Any, Dict, List, Optional, Tuple
 
+from bot import db
 from content import curriculum
 
 logger = logging.getLogger("whatsapp_bot")
 
-# --- Storage layer -----------------------------------------------------------
-USER_STATE: dict = {}
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-USERS_FILE = os.path.join(DATA_DIR, "users.json")
-TMP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tmp")
-TMP_USERS_FILE = os.path.join(TMP_DIR, "users.json")
-# Also try /tmp for serverless environments (Vercel, etc.)
-SYSTEM_TMP = os.environ.get("TMPDIR") or os.environ.get("TEMP") or os.environ.get("TMP") or "/tmp"
-SYSTEM_TMP_USERS_FILE = os.path.join(SYSTEM_TMP, "whatsapp_bot_users.json") if SYSTEM_TMP else None
-
-
-def _ensure_data_dir():
-    for d in (DATA_DIR, TMP_DIR):
-        try:
-            os.makedirs(d, exist_ok=True)
-        except Exception:
-            pass
-
-
-def _load_from_path(path: str):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            if isinstance(data, dict):
-                return data
-    except Exception:
-        pass
-    return None
-
-
-def _load_all() -> dict:
-    _ensure_data_dir()
-    # Try multiple locations in order of preference
-    for candidate in (USERS_FILE, TMP_USERS_FILE, SYSTEM_TMP_USERS_FILE):
-        if not candidate:
-            continue
-        data = _load_from_path(candidate)
-        if not data:
-            continue
-        if isinstance(data.get("users"), dict):
-            return data
-        elif isinstance(data, dict) and data and all(isinstance(v, dict) for v in data.values()):
-            return {"users": data}
-    return {}
-
-
-def _save_to_path(path: str, data: dict) -> bool:
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
-        return True
-    except Exception as e:
-        logger.warning(f"Failed to save to {path}: {e}")
-        return False
-
-
-def _save_all(data: dict) -> None:
-    _ensure_data_dir()
-    saved = False
-    for candidate in (USERS_FILE, TMP_USERS_FILE, SYSTEM_TMP_USERS_FILE):
-        if not candidate:
-            continue
-        if _save_to_path(candidate, data):
-            saved = True
-    if not saved:
-        logger.warning("Failed to persist user state to any location")
-
-
-# Initialize from disk
-try:
-    _disk_state = _load_all()
-    if isinstance(_disk_state.get("users"), dict):
-        USER_STATE = _disk_state["users"]
-    elif isinstance(_disk_state, dict) and _disk_state and all(isinstance(v, dict) for v in _disk_state.values()):
-        USER_STATE = _disk_state
-    else:
-        USER_STATE = {}
-except Exception:
-    USER_STATE = {}
-
-
 IDLE_STATE = {
     "phase": "idle",
-    "unit_id": None,
-    "lesson_index": None,
+    "unit_id": curriculum.DEFAULT_UNIT_ID,
+    "lesson_index": 0,
+    "completed_lessons": [],
+    "quiz_answers": {},
     "tutor_resume": None,
     "tutor_lesson": None,
     "assessment_index": None,
-    "assessment_answers": None,
+    "assessment_answers": {},
+    "total_messages": 0,
 }
 
 
 def get_state(wa_id: str) -> dict:
-    state = USER_STATE.get(wa_id)
-    if state is None:
-        try:
-            all_data = _load_all()
-            users = all_data.get("users") if isinstance(all_data.get("users"), dict) else all_data
-            if isinstance(users, dict) and wa_id in users:
-                state = users[wa_id]
-                USER_STATE[wa_id] = state
-        except Exception:
-            pass
-    if state is None:
-        return copy.deepcopy(IDLE_STATE)
-    # ensure metadata
-    try:
-        if "created_at" not in state:
-            from datetime import datetime
-            state["created_at"] = datetime.utcnow().isoformat() + "Z"
-        from datetime import datetime
-        state["last_seen"] = datetime.utcnow().isoformat() + "Z"
-        USER_STATE[wa_id] = state
-    except Exception:
-        pass
-    return copy.deepcopy(state)
+    """Retrieve user state from database by phone number."""
+    phone = str(wa_id).strip()
+    stored = db.get_user_state(phone)
+    if stored is None:
+        fresh = copy.deepcopy(IDLE_STATE)
+        fresh["phone_number"] = phone
+        # Note: Do not overwrite if user just pinged; save default
+        db.save_user_state(phone, fresh)
+        return fresh
+
+    # Ensure defaults for backward compatibility
+    for k, v in IDLE_STATE.items():
+        if k not in stored:
+            stored[k] = copy.deepcopy(v)
+    return stored
 
 
 def set_state(wa_id: str, state: dict) -> None:
-    try:
-        from datetime import datetime
-        state["last_seen"] = datetime.utcnow().isoformat() + "Z"
-        if "created_at" not in state:
-            state["created_at"] = state["last_seen"]
-    except Exception:
-        pass
-    USER_STATE[wa_id] = copy.deepcopy(state)
-    try:
-        _save_all({"users": USER_STATE})
-    except Exception as e:
-        logger.warning(f"Failed to persist state for {wa_id}: {e}")
+    """Save user state to persistent database."""
+    phone = str(wa_id).strip()
+    db.save_user_state(phone, state)
 
 
 def del_state(wa_id: str) -> None:
-    USER_STATE.pop(wa_id, None)
-    try:
-        _save_all({"users": USER_STATE})
-    except Exception:
-        pass
+    """Delete a user's state from the database."""
+    phone = str(wa_id).strip()
+    db.delete_user(phone)
 
 
 # --- Course progression ------------------------------------------------------
 
-def start_unit(wa_id: str, unit_id: str) -> dict:
+def start_unit(wa_id: str, unit_id: str = None, restart: bool = False) -> dict:
+    """
+    Start or resume a unit for user.
+    If restart is False and user already has progress in this unit, preserves their progress!
+    """
+    unit_id = unit_id or curriculum.DEFAULT_UNIT_ID
     state = get_state(wa_id)
+
+    # If user already has progress and not explicitly restarting, don't wipe!
+    if not restart and state.get("unit_id") == unit_id and state.get("lesson_index") is not None and state.get("lesson_index", 0) > 0:
+        state["phase"] = "lesson"
+        set_state(wa_id, state)
+        db.log_activity(wa_id, "course_resumed", f"Resumed {unit_id} at Lesson {(state.get('lesson_index', 0) + 1)}")
+        return state
+
     state.update({
         "phase": "lesson",
         "unit_id": unit_id,
-        "lesson_index": 0,
+        "lesson_index": 0 if restart or state.get("lesson_index") is None else state.get("lesson_index", 0),
         "tutor_resume": None,
         "tutor_lesson": None,
         "assessment_index": None,
-        "assessment_answers": None,
     })
+    if restart:
+        state["completed_lessons"] = []
+        state["quiz_answers"] = {}
+        state["lesson_index"] = 0
+
     set_state(wa_id, state)
+    event_name = "course_restarted" if restart else "course_enrolled"
+    db.log_activity(wa_id, event_name, f"Enrolled in {unit_id}")
     return state
 
 
 def current_lesson(state: dict):
-    phase = state.get("phase")
-    if phase not in ("lesson", "quiz"):
-        return None
-    unit_id = state.get("unit_id")
+    """
+    Resolve the active lesson object for the user.
+    Resilient: falls back to safe bounds instead of failing with None.
+    """
+    unit_id = state.get("unit_id") or curriculum.DEFAULT_UNIT_ID
     lesson_index = state.get("lesson_index")
-    if not unit_id or lesson_index is None:
-        return None
+    if lesson_index is None:
+        lesson_index = 0
+
     lesson_ids = curriculum.list_lessons(unit_id)
-    if lesson_index >= len(lesson_ids):
+    if not lesson_ids:
         return None
-    return curriculum.get_lesson(unit_id, lesson_ids[lesson_index])
+
+    if lesson_index >= len(lesson_ids):
+        # Already finished all lessons
+        return None
+
+    idx = max(0, min(lesson_index, len(lesson_ids) - 1))
+    return curriculum.get_lesson(unit_id, lesson_ids[idx])
 
 
 def open_quiz(wa_id: str) -> dict:
+    """Switch user phase to quiz."""
     state = get_state(wa_id)
     state["phase"] = "quiz"
     set_state(wa_id, state)
+    lesson = current_lesson(state)
+    lesson_title = lesson["title"] if lesson else f"Lesson {state.get('lesson_index', 0)+1}"
+    db.log_activity(wa_id, "quiz_opened", f"Opened quiz for {lesson_title}")
     return state
 
 
-def advance_past_lesson(wa_id: str):
+def record_quiz_result(wa_id: str, lesson_id: str, answer: str, correct: bool) -> None:
+    """Record user's quiz submission in state and database activity log."""
     state = get_state(wa_id)
-    lesson_ids = curriculum.list_lessons(state.get("unit_id"))
-    next_index = state.get("lesson_index", -1) + 1
+    quizzes = state.get("quiz_answers") or {}
+    quizzes[lesson_id] = {
+        "answer": answer,
+        "correct": correct,
+    }
+    state["quiz_answers"] = quizzes
+    set_state(wa_id, state)
+    status_label = "Correct" if correct else "Incorrect"
+    db.log_activity(wa_id, "quiz_answered", f"{lesson_id}: Option {answer} ({status_label})")
+
+
+def advance_past_lesson(wa_id: str):
+    """
+    Called after passing a quiz. Marks current lesson as completed and advances.
+    """
+    state = get_state(wa_id)
+    unit_id = state.get("unit_id") or curriculum.DEFAULT_UNIT_ID
+    lesson_ids = curriculum.list_lessons(unit_id)
+    current_idx = state.get("lesson_index", 0)
+
+    # Mark current lesson completed
+    completed = state.get("completed_lessons") or []
+    if current_idx < len(lesson_ids):
+        curr_id = lesson_ids[current_idx]
+        if curr_id not in completed:
+            completed.append(curr_id)
+    state["completed_lessons"] = completed
+
+    next_index = current_idx + 1
 
     if next_index < len(lesson_ids):
         state.update({"lesson_index": next_index, "phase": "lesson"})
         set_state(wa_id, state)
-        return "lesson", curriculum.get_lesson(state["unit_id"], lesson_ids[next_index])
+        next_les = curriculum.get_lesson(unit_id, lesson_ids[next_index])
+        db.log_activity(wa_id, "lesson_advanced", f"Advanced to {next_les['title']} ({next_index+1}/{len(lesson_ids)})")
+        return "lesson", next_les
 
-    state.update({"phase": "complete", "lesson_index": None})
+    # Course completed!
+    state.update({"phase": "complete", "lesson_index": len(lesson_ids)})
     set_state(wa_id, state)
+    db.log_activity(wa_id, "course_completed", f"Completed all {len(lesson_ids)} modules in {unit_id}!")
     return "complete", None
 
 
@@ -223,6 +187,7 @@ def enter_tutor(wa_id: str, lesson_id: str = None) -> dict:
         "tutor_lesson": lesson_id,
     })
     set_state(wa_id, state)
+    db.log_activity(wa_id, "tutor_entered", f"Context: {lesson_id or 'General'}")
     return state
 
 
@@ -235,6 +200,7 @@ def exit_tutor(wa_id: str) -> str:
         "tutor_lesson": None,
     })
     set_state(wa_id, state)
+    db.log_activity(wa_id, "tutor_exited", f"Returned to {resume}")
     return state["phase"]
 
 
@@ -250,19 +216,24 @@ def start_assessment(wa_id: str) -> dict:
         "tutor_lesson": None,
     })
     set_state(wa_id, state)
+    db.log_activity(wa_id, "assessment_started", "Started AI Self-Assessment")
     return state
 
 
 def assessment_index(wa_id: str) -> int:
     state = get_state(wa_id)
-    return state.get("assessment_index", 0)
+    idx = state.get("assessment_index")
+    return idx if idx is not None else 0
 
 
 def record_assessment_answer(wa_id: str, question_id: str, letter: str) -> dict:
     state = get_state(wa_id)
     answers = state.get("assessment_answers") or {}
     answers[question_id] = letter
-    next_index = state.get("assessment_index", 0) + 1
+    curr_index = state.get("assessment_index")
+    if curr_index is None:
+        curr_index = 0
+    next_index = curr_index + 1
     done = next_index >= len(curriculum.ASSESSMENT)
     state.update({
         "assessment_answers": answers,
@@ -271,6 +242,9 @@ def record_assessment_answer(wa_id: str, question_id: str, letter: str) -> dict:
     if done:
         state["phase"] = "idle"
     set_state(wa_id, state)
+    db.log_activity(wa_id, "assessment_answered", f"{question_id} = {letter}")
+    if done:
+        db.log_activity(wa_id, "assessment_completed", "Completed AI Self-Assessment")
     return {"done": done, "answers": answers}
 
 
@@ -282,20 +256,18 @@ def abort_assessment(wa_id: str) -> None:
         "assessment_answers": None,
     })
     set_state(wa_id, state)
+    db.log_activity(wa_id, "assessment_aborted", "Exited AI Self-Assessment")
 
 
 # --- Reset / Admin helpers ---------------------------------------------------
 
 def reset(wa_id: str) -> None:
-    del_state(wa_id)
+    """Reset user state to fresh idle state."""
+    fresh = copy.deepcopy(IDLE_STATE)
+    fresh["phone_number"] = wa_id
+    set_state(wa_id, fresh)
+    db.log_activity(wa_id, "user_reset", "User state reset by admin/system")
 
 
 def get_all_users() -> dict:
-    try:
-        all_data = _load_all()
-        users = all_data.get("users") if isinstance(all_data.get("users"), dict) else all_data
-        if isinstance(users, dict):
-            return copy.deepcopy(users)
-    except Exception:
-        pass
-    return copy.deepcopy(USER_STATE)
+    return db.get_all_users()
