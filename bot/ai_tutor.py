@@ -1,7 +1,7 @@
 """
 bot/ai_tutor.py
 
-AI Tutor backed by the Gemini API (google-generativeai SDK).
+AI Tutor backed by the Gemini API (google-generativeai SDK or direct REST fallback).
 
 Simple RAG approach
 -------------------
@@ -11,22 +11,20 @@ the CURRENT lesson or quiz the user is looking at - which is injected as the
 most-relevant context. That way the tutor always knows exactly where the
 student is in the course.
 
-For a larger curriculum, replace the flat context with real retrieval
-(embeddings + a vector store) and inject only the top-k matching chunks.
-
 Config (env vars):
     GEMINI_API_KEY - required
     GEMINI_MODEL   - optional, default "gemini-2.5-flash"
-
-Out-of-scope questions (politics, general trivia, etc.) are rejected by the
-system prompt so the tutor stays on-topic.
 """
 
 import asyncio
 import logging
 import os
+import httpx
 
-import google.generativeai as genai
+try:
+    import google.generativeai as genai
+except ImportError:
+    genai = None
 
 from content import curriculum
 
@@ -86,7 +84,10 @@ def _build_system_instruction(section: str) -> str:
 
 
 def _answer_sync(question: str, section: str) -> str:
-    """Blocking Gemini call (wrapped into a thread by answer_question)."""
+    """Blocking Gemini call using google-generativeai SDK."""
+    if not genai:
+        raise RuntimeError("genai library not available")
+    genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel(
         GEMINI_MODEL,
         system_instruction=_build_system_instruction(section),
@@ -100,6 +101,42 @@ def _answer_sync(question: str, section: str) -> str:
     return text if text else "I could not find an answer to that in the course material."
 
 
+async def _answer_rest(question: str, section: str) -> str:
+    """Direct REST call to Gemini API using httpx (zero SDK dependency)."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    system_inst = _build_system_instruction(section)
+    payload = {
+        "contents": [
+            {
+                "parts": [{"text": question}]
+            }
+        ],
+        "system_instruction": {
+            "parts": [{"text": system_inst}]
+        },
+        "generationConfig": {
+            "temperature": 0.4,
+            "maxOutputTokens": _MAX_OUTPUT_TOKENS,
+        }
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(url, json=payload)
+    if resp.status_code == 200:
+        data = resp.json()
+        try:
+            candidates = data.get("candidates", [])
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if parts:
+                    return parts[0].get("text", "").strip()
+        except Exception:
+            pass
+        return "I could not find an answer to that in the course material."
+    else:
+        logger.error(f"Gemini REST error {resp.status_code}: {resp.text}")
+        return "Sorry, the AI tutor hit a snag. Please try again in a moment."
+
+
 async def answer_question(question: str, section: str = "") -> str:
     """
     Answer a user's free-text question, with the full course context plus the
@@ -107,11 +144,17 @@ async def answer_question(question: str, section: str = "") -> str:
     Never raises: returns a friendly fallback message on any failure.
     """
     if not GEMINI_API_KEY:
-        logger.error("GEMINI_API_KEY is not set")
+        logger.warning("GEMINI_API_KEY is not set")
         return "The AI tutor is not configured yet. Ask your administrator to set GEMINI_API_KEY."
 
     try:
-        return await asyncio.to_thread(_answer_sync, question, section)
-    except Exception as exc:  # noqa: BLE001 - never let AI failures crash the webhook
+        if genai is not None:
+            return await asyncio.to_thread(_answer_sync, question, section)
+        return await _answer_rest(question, section)
+    except Exception as exc:  # noqa: BLE001
         logger.error("Gemini call failed: %s", exc, exc_info=True)
-        return "Sorry, the AI tutor hit a snag. Please try again in a moment."
+        # Try REST if SDK failed
+        try:
+            return await _answer_rest(question, section)
+        except Exception:
+            return "Sorry, the AI tutor hit a snag. Please try again in a moment."

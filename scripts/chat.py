@@ -32,14 +32,12 @@ os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 logging.basicConfig(level=logging.CRITICAL)
 os.environ.setdefault("VERIFY_TOKEN", "local-test")
+os.environ["MOCK_SEND"] = "1"
 
-from fastapi.testclient import TestClient  # noqa: E402
 from bot import ai_tutor  # noqa: E402
 from api import index as app_module  # noqa: E402
 
 FAKE_USER = "1555-test-local"
-
-client = TestClient(app_module.app)
 
 outbox = []
 last_turn_buttons = []
@@ -107,11 +105,27 @@ def print_bot_turn():
     outbox.clear()
 
 
+def _run_async(coro):
+    """Run an async coroutine synchronously and handle event loop cleanly."""
+    try:
+        coro.send(None)
+    except StopIteration:
+        return
+    except Exception:
+        pass
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 def send_message(wa_id, payload):
     outbox.clear()
-    response = client.post("/webhook", json=payload)
-    if response.status_code != 200:
-        print(f"  !!! webhook returned {response.status_code}: {response.text}")
+    for entry in payload.get("entry", []):
+        for change in entry.get("changes", []):
+            for message in change.get("value", {}).get("messages", []):
+                _run_async(app_module.handle_incoming(wa_id, message))
     print_bot_turn()
 
 
