@@ -1,37 +1,39 @@
-# EdTech Hub - WhatsApp Learning Bot & Admin Dashboard
+# EdTech Hub - WhatsApp Learning Bot & Enterprise Admin Dashboard
 
-An AI-powered teacher-training companion bot delivered over WhatsApp, featuring complete progress persistence, student resume capabilities, and a real-time admin analytics dashboard.
+> **Version 2.1** • Live Production Ready  
+> AI-powered teacher-training companion bot delivered over WhatsApp, featuring complete student progress persistence, automatic course resumption, and an enterprise-grade real-time analytics console branded with the official EDTECH company logo.
 
 ---
 
-## 🚀 Key Improvements & Fixes
+## 🚀 Key Features & Capabilities
 
 1. **Persistent Database Storage**:
    - Every learner is identified and saved by their **actual WhatsApp phone number** (`wa_id`, e.g. `+251911223344` or `+15551234567`).
-   - Learner progress, completed modules, quiz answers, and self-assessment results are saved to persistent storage (`data/portal.db` SQLite by default, with auto-detection for cloud databases).
+   - Learner progress, completed modules, quiz answers, and self-assessment results are saved to persistent storage (`data/portal.db` SQLite by default, with auto-detection for PostgreSQL, Supabase, Neon, or Upstash Redis).
    - Removed the *"your progress has been reset (this server doesn't have a database yet)"* error permanently.
+   - **Zero Sample Data**: Clean production database ready to record live teacher data as soon as they ping WhatsApp.
 
 2. **Continue Where They Left Off Anytime**:
    - If a learner returns after hours, days, or weeks and sends `"hi"`, `"continue"`, or taps **"Resume Course"**, they are immediately picked up at their exact module and lesson.
    - Modules already finished are marked in `completed_lessons` so students never lose their completed work.
    - If a learner wants to start over, a dedicated **"Restart Course"** option is available.
 
-3. **Admin Analytics Dashboard**:
+3. **Enterprise SaaS Admin Intelligence Dashboard**:
    - Access at `/admin` or `/dashboard` (protected with `ADMIN_PASSWORD`, default: `admin123`).
-   - **Overview Metrics**: Total learners, active learners, course completions, self-assessment responses, and total interactions.
-   - **"When Are They Learning?"**:
-     - Visual 24-hour activity distribution chart (00:00 - 23:00 UTC) revealing peak learning hours.
-     - Time-of-day categories: Morning (06:00 - 12:00), Afternoon (12:00 - 17:00), Evening (17:00 - 22:00), Night (22:00 - 06:00).
-     - Daily volume by day of the week (Monday - Sunday).
-   - **11-Module Progression Funnel**: See how many learners reached and completed Modules 1 through 11.
-   - **Teacher AI Readiness Survey Insights**: Aggregated breakdown of teacher AI usage, confidence levels, challenges, and course goals.
+   - **Branding**: Official circular **EDTECH** company logo integrated into the header, sign-in screen, and browser favicon.
+   - **Real-Time Live Polling**: Automatic 30-second client-side polling and instant AJAX refresh without page reloads.
+   - **Interactive Chart.js Visualizations**:
+     - **Learner Status Donut Chart**: Live distribution of students across Course Completed, Learning Lessons, Quizzes, AI Tutor Mode, Self-Assessment, and Idle.
+     - **Time-of-Day Habits Donut Chart**: Breakdown of when teachers study (Morning 06:00-12:00, Afternoon 12:00-17:00, Evening 17:00-22:00, Night 22:00-06:00).
+     - **24-Hour Rhythm Area Chart**: Smooth curve showing exact hourly activity peaks across 24 hours UTC.
+     - **11-Module Progression Funnel**: Bar chart displaying learner progression and drop-off across Modules 1 to 11.
+   - **Educator AI Readiness Survey Analysis**: Aggregated breakdown of teacher AI usage frequency, confidence levels, primary challenges, and goals.
    - **Learners Directory**:
-     - Live search by phone number.
-     - Progress bars (% complete) and status badges (In Progress, Quiz, AI Tutor, Completed).
-     - Direct WhatsApp link to chat with the student with 1 click.
-     - **Learner Journey Modal**: Full chronological timeline of every event logged for that student.
-     - **Reset Progress Action**: Reset an individual student if needed.
-     - **Export to CSV**: Download user and activity data for Excel / Google Sheets.
+     - Real-time search filter by phone number and status filter tabs (All, Active, Graduated, AI Tutor, Idle).
+     - Direct **"💬 WhatsApp"** button (`https://wa.me/...`) to open a direct chat with any student in 1 click.
+     - **"Student Journey"** Modal: Interactive timeline displaying the complete chronological activity trail, quiz answers, and survey results.
+     - **"Reset"** & **"Delete"** actions for learner lifecycle management.
+   - **CSV Export**: Instant 1-click download of all actual learner records.
 
 ---
 

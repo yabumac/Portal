@@ -16,7 +16,7 @@ import logging
 import os
 
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from bot import ai_tutor, db, state, whatsapp
 from content import curriculum
@@ -63,6 +63,15 @@ try:
     @app.get("/api/dashboard", response_class=HTMLResponse)
     async def dashboard_view(request: Request):
         return await admin_dashboard(request)
+
+    @app.get("/media/logo.png")
+    @app.get("/logo.png")
+    @app.get("/static/logo.png")
+    async def serve_company_logo():
+        logo_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "media", "logo.png")
+        if os.path.exists(logo_path):
+            return FileResponse(logo_path, media_type="image/png")
+        return Response(status_code=404)
 except Exception as e:
     logger.error(f"Failed to load admin router: {e}", exc_info=True)
 

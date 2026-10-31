@@ -69,12 +69,10 @@ def _get_sqlite_connection() -> sqlite3.Connection:
     _ensure_dirs()
     target_path = SQLITE_PATH
     try:
-        # Check if directory of target_path is writable
         dir_name = os.path.dirname(target_path)
         if dir_name:
             os.makedirs(dir_name, exist_ok=True)
         conn = sqlite3.connect(target_path, timeout=10.0)
-        # Test write
         conn.execute("CREATE TABLE IF NOT EXISTS _test_write (id INT)")
         conn.commit()
         return conn
@@ -94,7 +92,6 @@ def init_db() -> str:
     if _DB_INITIALIZED:
         return _ACTIVE_BACKEND
 
-    # 1. Try SQLite initialization
     try:
         conn = _get_sqlite_connection()
         with conn:
@@ -146,7 +143,7 @@ def _migrate_legacy_json() -> None:
     """Imports any existing data/users.json into SQLite on first startup."""
     try:
         legacy_users = {}
-        for path in (USERS_FILE, TMP_USERS_FILE, SYSTEM_TMP_USERS_FILE):
+        for path in (USERS_FILE,):
             if path and os.path.exists(path):
                 try:
                     with open(path, "r", encoding="utf-8") as f:
@@ -225,7 +222,6 @@ def get_user_state(phone_number: str) -> Optional[dict]:
     if not clean_phone:
         return None
 
-    # Check cache first
     if clean_phone in _MEMORY_CACHE:
         return copy.deepcopy(_MEMORY_CACHE[clean_phone])
 
@@ -244,7 +240,6 @@ def get_user_state(phone_number: str) -> Optional[dict]:
                     st = json.loads(state_json)
                 except Exception:
                     st = {}
-            # Ensure key fields are present
             st["phone_number"] = clean_phone
             st["phase"] = phase or st.get("phase", "idle")
             st["unit_id"] = unit_id or st.get("unit_id")
@@ -289,7 +284,6 @@ def save_user_state(phone_number: str, state_dict: dict) -> None:
     state["phone_number"] = clean_phone
     state["total_messages"] = state.get("total_messages", 0) + 1
 
-    # Update cache
     _MEMORY_CACHE[clean_phone] = copy.deepcopy(state)
 
     phase = state.get("phase", "idle")
@@ -322,7 +316,6 @@ def save_user_state(phone_number: str, state_dict: dict) -> None:
     except Exception as e:
         logger.error(f"Failed to save user {clean_phone} to SQLite: {e}")
 
-    # Best-effort backup
     try:
         _save_json_backup(_MEMORY_CACHE)
     except Exception:
@@ -389,7 +382,6 @@ def get_all_users() -> Dict[str, dict]:
         conn.close()
     except Exception as e:
         logger.error(f"Error fetching all users from SQLite: {e}")
-        # fallback to cache
         return copy.deepcopy(_MEMORY_CACHE)
 
     return copy.deepcopy(users)
@@ -461,11 +453,13 @@ def get_activity_logs(limit: int = 50, phone_number: Optional[str] = None) -> Li
 
 def get_analytics_summary() -> dict:
     """
-    Compute comprehensive analytics:
+    Compute comprehensive analytics from actual real database records:
     - User totals (total, active, completed, assessment)
     - "When are they learning?" Hourly distribution (0-23 hours)
     - "When are they learning?" Days of week & daily trends
-    - Course progression funnel
+    - Learner status breakdown (Pie / Donut chart)
+    - Time-of-day learning breakdown (Pie / Donut chart)
+    - 11-Module progression funnel
     - Assessment response insights
     - Recent activity feed
     """
@@ -477,6 +471,15 @@ def get_analytics_summary() -> dict:
     completed_learners = 0
     assessment_completed = 0
     total_interactions = 0
+
+    status_distribution = {
+        "completed": 0,
+        "lesson": 0,
+        "quiz": 0,
+        "tutor": 0,
+        "assessment": 0,
+        "idle": 0,
+    }
 
     # Funnel per lesson index (0 to 10 for 11 lessons)
     lesson_funnel = [0] * 11
@@ -494,25 +497,43 @@ def get_analytics_summary() -> dict:
 
         if phase == "complete" or len(completed_lessons) >= 11:
             completed_learners += 1
+            status_distribution["completed"] += 1
             progress_pct = 100
-        elif phase in ("lesson", "quiz", "tutor"):
+        elif phase == "lesson":
             active_learners += 1
+            status_distribution["lesson"] += 1
             curr_idx = lesson_idx if lesson_idx is not None else 0
             progress_pct = min(100, round((curr_idx / 11) * 100))
             if 0 <= curr_idx < 11:
                 lesson_funnel[curr_idx] += 1
+        elif phase == "quiz":
+            active_learners += 1
+            status_distribution["quiz"] += 1
+            curr_idx = lesson_idx if lesson_idx is not None else 0
+            progress_pct = min(100, round((curr_idx / 11) * 100))
+            if 0 <= curr_idx < 11:
+                lesson_funnel[curr_idx] += 1
+        elif phase == "tutor":
+            active_learners += 1
+            status_distribution["tutor"] += 1
+            curr_idx = lesson_idx if lesson_idx is not None else 0
+            progress_pct = min(100, round((curr_idx / 11) * 100))
+            if 0 <= curr_idx < 11:
+                lesson_funnel[curr_idx] += 1
+        elif phase == "assessment":
+            status_distribution["assessment"] += 1
+            progress_pct = 0
         else:
+            status_distribution["idle"] += 1
             progress_pct = 0
 
         if assess_answers and len(assess_answers) >= 4:
             assessment_completed += 1
 
-        # Calculate relative time for last_seen
         last_seen = u.get("last_seen") or u.get("created_at") or ""
         created_at = u.get("created_at") or ""
         relative_last_seen = _format_relative_time(last_seen)
 
-        # Get module title
         current_module_title = f"Module {(lesson_idx + 1) if lesson_idx is not None else 1}"
         if phase == "complete":
             current_module_title = "Course Completed (11/11)"
@@ -542,25 +563,21 @@ def get_analytics_summary() -> dict:
     # Hourly learning activity (0-23)
     hourly_counts = [0] * 24
     day_counts = [0] * 7  # 0=Mon, 6=Sun
-    recent_activity = []
 
     try:
         conn = _get_sqlite_connection()
         cursor = conn.cursor()
 
-        # Hourly counts
         cursor.execute("SELECT hour_of_day, COUNT(*) FROM activity_logs GROUP BY hour_of_day")
         for h, count in cursor.fetchall():
             if 0 <= h < 24:
                 hourly_counts[h] = count
 
-        # Day of week counts
         cursor.execute("SELECT day_of_week, COUNT(*) FROM activity_logs GROUP BY day_of_week")
         for d, count in cursor.fetchall():
             if 0 <= d < 7:
                 day_counts[d] = count
 
-        # Total events logged
         cursor.execute("SELECT COUNT(*) FROM activity_logs")
         logged_events_count = cursor.fetchone()[0]
         if logged_events_count > 0:
@@ -570,8 +587,8 @@ def get_analytics_summary() -> dict:
     except Exception as e:
         logger.warning(f"Error calculating activity analytics: {e}")
 
-    # Fetch last 30 activity items
-    recent_activity = get_activity_logs(limit=30)
+    # Fetch last 40 activity items
+    recent_activity = get_activity_logs(limit=40)
 
     # Time of day buckets
     morning = sum(hourly_counts[6:12])     # 6am - 12pm
@@ -627,6 +644,9 @@ def get_analytics_summary() -> dict:
         elif ans.get("goal") == "C":
             assessment_summary["goal"]["Responsible & safe AI"] += 1
 
+    completion_rate = round((completed_learners / total_users * 100), 1) if total_users > 0 else 0
+    avg_progress = round(sum(u["progress_percent"] for u in users_list) / total_users, 1) if total_users > 0 else 0
+
     return {
         "status": "ok",
         "backend": _ACTIVE_BACKEND,
@@ -637,21 +657,39 @@ def get_analytics_summary() -> dict:
             "completed_learners": completed_learners,
             "assessment_completed": assessment_completed,
             "total_interactions": total_interactions,
+            "completion_rate": completion_rate,
+            "average_progress": avg_progress,
             "peak_hour_utc": f"{peak_hour:02d}:00 UTC",
             "peak_hour_count": max_h_count,
         },
+        "status_distribution": {
+            "labels": ["Course Completed", "Learning Lessons", "Taking Quiz", "AI Tutor Mode", "AI Self-Assessment", "Idle / Menu"],
+            "counts": [
+                status_distribution["completed"],
+                status_distribution["lesson"],
+                status_distribution["quiz"],
+                status_distribution["tutor"],
+                status_distribution["assessment"],
+                status_distribution["idle"],
+            ],
+            "raw": status_distribution,
+        },
         "when_are_they_learning": {
             "hourly_counts": hourly_counts,
+            "hourly_labels": [f"{h:02d}:00" for h in range(24)],
             "time_of_day": {
                 "Morning (06:00 - 12:00)": morning,
                 "Afternoon (12:00 - 17:00)": afternoon,
                 "Evening (17:00 - 22:00)": evening,
                 "Night (22:00 - 06:00)": night,
             },
+            "time_of_day_counts": [morning, afternoon, evening, night],
+            "time_of_day_labels": ["Morning (06:00 - 12:00)", "Afternoon (12:00 - 17:00)", "Evening (17:00 - 22:00)", "Night (22:00 - 06:00)"],
             "daily_counts": daily_formatted,
         },
         "progression_funnel": {
             "lesson_counts": lesson_funnel,
+            "labels": [f"Mod {i+1}" for i in range(11)],
             "total_modules": 11,
         },
         "assessment_insights": assessment_summary,
@@ -665,7 +703,6 @@ def _format_relative_time(iso_str: str) -> str:
     if not iso_str:
         return "Never"
     try:
-        # Strip trailing Z if present and parse
         clean_iso = iso_str.replace("Z", "+00:00")
         dt = datetime.fromisoformat(clean_iso)
         if dt.tzinfo is None:
