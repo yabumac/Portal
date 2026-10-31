@@ -92,6 +92,22 @@ async def health_check(request: Request):
         logger.info("Webhook verified at root (%s)", mode)
         return Response(content=challenge, media_type="text/plain")
 
+    # If Vercel rewrote an admin or dashboard request to /api
+    raw_path = (
+        request.headers.get("x-matched-path")
+        or request.headers.get("x-invoke-path")
+        or request.headers.get("x-forwarded-uri")
+        or ""
+    ).lower()
+
+    if "admin/login" in raw_path or raw_path.endswith("/login"):
+        from api.admin import login_page
+        return await login_page()
+
+    if "admin" in raw_path or "dashboard" in raw_path or params.get("password") or params.get("pass"):
+        from api.admin import admin_dashboard
+        return await admin_dashboard(request)
+
     return {
         "status": "ok",
         "message": "EdTech Hub WhatsApp Learning Bot is running",
@@ -165,9 +181,17 @@ async def catch_all_get(request: Request, path: str = ""):
         return Response(content=challenge, media_type="text/plain")
 
     clean_path = path.strip("/").lower()
-    if clean_path in ("admin", "dashboard"):
+    if clean_path.startswith("admin/login") or clean_path == "login":
+        from api.admin import login_page
+        return await login_page()
+
+    if clean_path in ("admin", "dashboard") or clean_path.startswith("admin") or clean_path.startswith("dashboard") or params.get("password") or params.get("pass"):
         from api.admin import admin_dashboard
         return await admin_dashboard(request)
+
+    if clean_path in ("media/logo.png", "logo.png", "static/logo.png"):
+        from api.admin import admin_logo
+        return await admin_logo()
 
     return Response(
         content='{"status": "ok", "message": "WhatsApp Learning Bot running"}',
