@@ -370,6 +370,36 @@ async def handle_text(wa_id: str, raw: str) -> None:
         await send_assessment_question(wa_id, idx)
         return
 
+    # Replay or send video on demand
+    if low in ("video", "watch video", "watch", "play video", "clip", "replay", "show video", "send video"):
+        lesson = state.current_lesson(cur)
+        if lesson and lesson.get("video_file"):
+            v_url = get_public_media_url(lesson["video_file"])
+            caption = f"{lesson['title']}\n\n{lesson.get('caption') or 'Watch the lesson video above:'}"
+            await whatsapp.send_media(wa_id, "video", v_url, caption=caption)
+        else:
+            await whatsapp.send_text(wa_id, "Please tap 'Enroll in Course' to view the first module video.")
+        return
+
+    # Direct enrollment or start commands
+    if low in ("enroll", "start", "begin", "learn", "study", "join", "course"):
+        await handle_button_click(wa_id, ENROLL)
+        return
+
+    # Direct module jumping (e.g. "module 1", "module 2")
+    for mod_num in range(1, 8):
+        if low in (f"module {mod_num}", f"mod {mod_num}", f"lesson {mod_num}"):
+            unit_id = cur.get("unit_id") or curriculum.DEFAULT_UNIT_ID
+            state.start_unit(wa_id, unit_id, restart=False)
+            updated = state.get_state(wa_id)
+            updated["lesson_index"] = mod_num - 1
+            updated["phase"] = "lesson"
+            state.set_state(wa_id, updated)
+            lesson = state.current_lesson(updated)
+            if lesson:
+                await deliver_lesson(wa_id, lesson)
+            return
+
     # lesson or resume shortcuts
     if low in LESSON_GO:
         if phase == "quiz":
@@ -446,6 +476,17 @@ async def handle_button_click(wa_id: str, button_id: str) -> None:
 
     if button_id == READY_QUIZ:
         await send_quiz(wa_id)
+        return
+
+    if button_id == "watch_video":
+        cur = state.get_state(wa_id)
+        lesson = state.current_lesson(cur)
+        if lesson and lesson.get("video_file"):
+            v_url = get_public_media_url(lesson["video_file"])
+            caption = f"{lesson['title']}\n\n{lesson.get('caption') or 'Watch the lesson video above:'}"
+            await whatsapp.send_media(wa_id, "video", v_url, caption=caption)
+        else:
+            await whatsapp.send_text(wa_id, "No video clip found for this section.")
         return
 
     if button_id == EXIT_TUTOR:
@@ -611,9 +652,10 @@ async def deliver_lesson(wa_id: str, lesson) -> None:
         "Module complete - choose an option below:",
         [
             {"id": READY_QUIZ, "title": "Continue to Quiz"},
+            {"id": "watch_video", "title": "Watch Video Again"},
             {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
         ],
-        footer="Ask a question or continue to the quiz",
+        footer="Tap an option to proceed",
     )
 
 
