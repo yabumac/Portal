@@ -72,17 +72,27 @@ try:
     @app.get("/logo.png")
     @app.get("/static/logo.png")
     async def serve_company_logo():
-        logo_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "media", "logo.png")
-        if os.path.exists(logo_path):
-            return FileResponse(logo_path, media_type="image/png")
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for candidate in (
+            os.path.join(base, "public", "logo.png"),
+            os.path.join(base, "media", "logo.png"),
+            os.path.join(base, "public", "media", "logo.png"),
+        ):
+            if os.path.exists(candidate):
+                return FileResponse(candidate, media_type="image/png")
         return Response(status_code=404)
 
     @app.get("/media/{filename:path}")
     async def serve_media_asset(filename: str):
-        media_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "media", filename)
-        if os.path.exists(media_path):
-            media_type = "video/mp4" if filename.lower().endswith(".mp4") else ("image/png" if filename.lower().endswith(".png") else "application/octet-stream")
-            return FileResponse(media_path, media_type=media_type)
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for candidate in (
+            os.path.join(base, "public", "media", filename),
+            os.path.join(base, "public", filename),
+            os.path.join(base, "media", filename),
+        ):
+            if os.path.exists(candidate):
+                media_type = "video/mp4" if filename.lower().endswith(".mp4") else ("image/png" if filename.lower().endswith(".png") else "application/octet-stream")
+                return FileResponse(candidate, media_type=media_type)
         return Response(status_code=404)
 except Exception as e:
     logger.error(f"Failed to load admin router: {e}", exc_info=True)
@@ -238,10 +248,15 @@ async def catch_all_get(request: Request, path: str = ""):
 
     if clean_path.startswith("media/"):
         filename = clean_path[len("media/"):].strip("/")
-        media_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "media", filename)
-        if os.path.exists(media_path):
-            media_type = "video/mp4" if filename.endswith(".mp4") else ("image/png" if filename.endswith(".png") else "application/octet-stream")
-            return FileResponse(media_path, media_type=media_type)
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for candidate in (
+            os.path.join(base, "public", "media", filename),
+            os.path.join(base, "public", filename),
+            os.path.join(base, "media", filename),
+        ):
+            if os.path.exists(candidate):
+                media_type = "video/mp4" if filename.endswith(".mp4") else ("image/png" if filename.endswith(".png") else "application/octet-stream")
+                return FileResponse(candidate, media_type=media_type)
 
     return Response(
         content='{"status": "ok", "message": "WhatsApp Learning Bot running"}',

@@ -1,0 +1,12 @@
+# Ignore large master media and video source files from serverless function bundle
+media/
+scripts/
+data/
+tmp/
+*.mp4
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/

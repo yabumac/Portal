@@ -19,7 +19,7 @@ import os
 from typing import Optional
 from urllib.parse import parse_qs
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Cookie, Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
 from bot import db, state
@@ -255,6 +255,10 @@ async def process_login(request: Request):
     return RedirectResponse(url="/admin/login?error=Invalid%20admin%20password", status_code=status.HTTP_302_FOUND)
 
 
+# Alias for compatibility with external router invocations
+login_submit = process_login
+
+
 @router.get("/logout")
 async def logout():
     response = RedirectResponse(url="/admin/login", status_code=status.HTTP_302_FOUND)
@@ -353,7 +357,6 @@ async def export_users_csv(request: Request):
     )
 
 
-@router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 @router.get("/dashboard", response_class=HTMLResponse)
 async def admin_dashboard(request: Request):
@@ -365,7 +368,8 @@ async def admin_dashboard(request: Request):
     users_list = data["users"]
     recent_activity = data["recent_activity"]
     backend = data["backend"]
-    db_path = data["database_path"].split(os.sep)[-1]
+    raw_db_path = str(data.get("database_path") or "portal.db").replace("\\", "/")
+    db_path = raw_db_path.split("/")[-1] if raw_db_path else "portal.db"
 
     from bot import whatsapp
     meta_status = whatsapp.get_connection_status()
@@ -1999,5 +2003,6 @@ async def admin_dashboard(request: Request):
     return response
 
 
-# Top-level fallback for admin mounted app
-app = router
+# Top-level ASGI application fallback if Vercel routes directly to /api/admin
+app = FastAPI(title="EdTech Hub Admin Portal")
+app.include_router(router, prefix="/admin")

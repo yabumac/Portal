@@ -1,8 +1,6 @@
 {
   "version": 2,
   "rewrites": [
-    { "source": "/media/(.*)", "destination": "/media/$1" },
-    { "source": "/logo.png", "destination": "/logo.png" },
     { "source": "/(.*)", "destination": "/api/index.py" }
   ]
 }
