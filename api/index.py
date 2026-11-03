@@ -149,6 +149,10 @@ async def health_check(request: Request):
         from api.admin import login_page
         return await login_page()
 
+    if "admin/api/analytics" in raw_path or "api/analytics" in raw_path:
+        from api.admin import get_analytics_json
+        return await get_analytics_json(request)
+
     if "admin" in raw_path or "dashboard" in raw_path or params.get("password") or params.get("pass"):
         from api.admin import admin_dashboard
         return await admin_dashboard(request)
@@ -250,7 +254,15 @@ async def catch_all_get(request: Request, path: str = ""):
         from api.admin import login_page
         return await login_page()
 
-    if clean_path in ("admin", "dashboard") or clean_path.startswith("admin") or clean_path.startswith("dashboard") or params.get("password") or params.get("pass"):
+    if clean_path in ("admin/api/analytics", "api/admin/analytics", "api/analytics"):
+        from api.admin import get_analytics_json
+        return await get_analytics_json(request)
+
+    if clean_path in ("admin/export/csv", "export/csv"):
+        from api.admin import export_users_csv
+        return await export_users_csv(request)
+
+    if clean_path in ("admin", "dashboard", "admin/dashboard", "api/admin", "api/dashboard") or clean_path.startswith("admin/") or params.get("password") or params.get("pass"):
         from api.admin import admin_dashboard
         return await admin_dashboard(request)
 
