@@ -58,6 +58,10 @@ try:
     app.include_router(admin_router, prefix="/admin", tags=["admin"])
     app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
 
+    @app.get("/admin", response_class=HTMLResponse)
+    @app.get("/admin/", response_class=HTMLResponse)
+    @app.get("/api/admin", response_class=HTMLResponse)
+    @app.get("/api/admin/", response_class=HTMLResponse)
     @app.get("/dashboard", response_class=HTMLResponse)
     @app.get("/dashboard/", response_class=HTMLResponse)
     @app.get("/api/dashboard", response_class=HTMLResponse)
@@ -82,6 +86,17 @@ try:
         return Response(status_code=404)
 except Exception as e:
     logger.error(f"Failed to load admin router: {e}", exc_info=True)
+
+
+def get_public_media_url(filename_or_path: str) -> str:
+    """Build a fully qualified public HTTPS URL for media delivery to WhatsApp."""
+    clean = filename_or_path.lstrip("./").lstrip("/")
+    if not clean.startswith("media/"):
+        clean = f"media/{clean}"
+    host = os.getenv("PUBLIC_URL") or os.getenv("VERCEL_URL") or "portal-six-sepia-65.vercel.app"
+    if not host.startswith(("http://", "https://")):
+        host = f"https://{host}"
+    return f"{host.rstrip('/')}/{clean}"
 
 
 # ---------------------------------------------------------------------------
@@ -343,11 +358,17 @@ async def handle_button_click(wa_id: str, button_id: str) -> None:
 
     if button_id in (ENROLL, RESUME):
         cur = state.get_state(wa_id)
-        # Check if user already has course progress - resume without losing state!
         lesson_idx = cur.get("lesson_index", 0)
         completed = cur.get("completed_lessons") or []
 
-        if (lesson_idx > 0 or len(completed) > 0) and cur.get("phase") != "complete":
+        # Check if user already has course progress - resume without losing state!
+        has_progress = (
+            cur.get("phase") in ("lesson", "quiz", "tutor", "assessment")
+            or (lesson_idx is not None and lesson_idx > 0)
+            or len(completed) > 0
+        ) and cur.get("phase") != "complete"
+
+        if has_progress:
             # Resume existing course
             state.start_unit(wa_id, curriculum.DEFAULT_UNIT_ID, restart=False)
             lesson = state.current_lesson(state.get_state(wa_id))
@@ -365,7 +386,7 @@ async def handle_button_click(wa_id: str, button_id: str) -> None:
 
     if button_id == RESTART:
         state.start_unit(wa_id, curriculum.DEFAULT_UNIT_ID, restart=True)
-        await whatsapp.send_text(wa_id, "Course reset! Starting Module 1:")
+        await whatsapp.send_text(wa_id, "Course reset. Starting Module 1:")
         lesson = state.current_lesson(state.get_state(wa_id))
         await deliver_lesson(wa_id, lesson)
         return
@@ -412,45 +433,56 @@ async def send_menu(wa_id: str, fresh: bool = True) -> None:
     lesson_idx = cur.get("lesson_index", 0)
     completed = cur.get("completed_lessons") or []
 
-    # Check if user has existing progress in the course
-    has_progress = (lesson_idx > 0 or len(completed) > 0) and phase != "complete"
+    # Check if user has active or existing progress in the course
+    has_progress = (
+        phase in ("lesson", "quiz", "tutor", "assessment")
+        or (lesson_idx is not None and lesson_idx > 0)
+        or len(completed) > 0
+    ) and phase != "complete"
 
     if fresh:
         if has_progress:
             lesson = state.current_lesson(cur)
-            lesson_title = lesson["title"] if lesson else f"Module {lesson_idx + 1}"
+            lesson_title = lesson["title"] if lesson else f"Module {(lesson_idx or 0) + 1}"
             total_mods = curriculum.total_lessons(cur.get("unit_id") or curriculum.DEFAULT_UNIT_ID) or 7
             await whatsapp.send_text(
                 wa_id,
-                f"Welcome back to EdTech Hub!\n\n"
+                f"Welcome back to EdTech Hub.\n\n"
                 f"You are currently on: {lesson_title} (Completed {len(completed)}/{total_mods} modules).\n\n"
                 f"Choose an option below to continue where you left off:",
             )
         else:
-            await whatsapp.send_text(wa_id, curriculum.BOT_INTRO)
+            # Send company logo image upon greeting
             try:
-                video_url = curriculum.INTRO_VIDEO_URL
-                if not video_url.startswith(("http://", "https://")):
-                    public_host = os.getenv("PUBLIC_URL") or os.getenv("VERCEL_URL") or "portal-six-sepia-65.vercel.app"
-                    if not public_host.startswith("http"):
-                        public_host = f"https://{public_host}"
-                    clean_path = video_url.lstrip("./").lstrip("/")
-                    video_url = f"{public_host}/{clean_path}"
+                logo_url = get_public_media_url("logo.png")
+                await whatsapp.send_media(
+                    wa_id,
+                    "image",
+                    logo_url,
+                    caption="EdTech Hub - AI for Ethiopian Educators",
+                )
+            except Exception as logo_err:
+                logger.warning("Could not send welcome logo (non-blocking): %s", logo_err)
 
+            # Send welcome overview video clip
+            try:
+                video_url = get_public_media_url("vid_01_welcome.mp4")
                 await whatsapp.send_media(
                     wa_id,
                     "video",
                     video_url,
-                    caption="EdTech Hub - AI for Educators",
+                    caption="Course Overview: 4 Learning Objectives",
                 )
             except Exception as media_err:
                 logger.warning("Could not send intro video (non-blocking): %s", media_err)
+
+            await whatsapp.send_text(wa_id, curriculum.BOT_INTRO)
     else:
         await whatsapp.send_text(wa_id, "Main menu:")
 
     if has_progress:
         buttons = [
-            {"id": RESUME, "title": "Resume Course"},
+            {"id": RESUME, "title": "Continue Course"},
             {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
             {"id": RESTART, "title": "Restart Course"},
         ]
@@ -458,13 +490,13 @@ async def send_menu(wa_id: str, fresh: bool = True) -> None:
         buttons = [
             {"id": RESTART, "title": "Review / Restart"},
             {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
-            {"id": ASSESS, "title": "AI Self-Assessment"},
+            {"id": ASSESS, "title": "Take Survey"},
         ]
     else:
         buttons = [
             {"id": ENROLL, "title": "Enroll in Course"},
+            {"id": ASSESS, "title": "Take Survey"},
             {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
-            {"id": ASSESS, "title": "AI Self-Assessment"},
         ]
 
     await whatsapp.send_buttons(
@@ -477,7 +509,7 @@ async def send_menu(wa_id: str, fresh: bool = True) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Course delivery
+# Course delivery (Video & Picture-First Methodology)
 # ---------------------------------------------------------------------------
 async def deliver_lesson(wa_id: str, lesson) -> None:
     if lesson is None:
@@ -486,34 +518,49 @@ async def deliver_lesson(wa_id: str, lesson) -> None:
 
     db.log_activity(wa_id, "lesson_viewed", lesson.get("title", ""))
 
+    # 1. Lesson Title
     await whatsapp.send_text(wa_id, lesson["title"])
-    for paragraph in lesson["body"]:
+
+    # 2. Chopped video clip first (Primary learning medium)
+    video_file = lesson.get("video_file")
+    if video_file:
+        try:
+            v_url = get_public_media_url(video_file)
+            caption = lesson.get("caption") or lesson["title"]
+            await whatsapp.send_media(
+                wa_id,
+                "video",
+                v_url,
+                caption=caption,
+            )
+        except Exception as vid_err:
+            logger.warning("Could not send lesson video clip: %s", vid_err)
+
+    # 3. Visual diagram / slide frame
+    image_file = lesson.get("image_file")
+    if image_file:
+        try:
+            img_url = get_public_media_url(image_file)
+            await whatsapp.send_media(
+                wa_id,
+                "image",
+                img_url,
+                caption="Instructional Visual Guide",
+            )
+        except Exception as img_err:
+            logger.warning("Could not send lesson image: %s", img_err)
+
+    # 4. Concise instructional summary points
+    for paragraph in lesson.get("body", []):
         await whatsapp.send_text(wa_id, paragraph)
 
-    media = lesson.get("media")
-    if media:
-        try:
-            m_url = media.get("url", "")
-            if m_url and not m_url.startswith(("http://", "https://")):
-                public_host = os.getenv("PUBLIC_URL") or os.getenv("VERCEL_URL") or "portal-six-sepia-65.vercel.app"
-                if not public_host.startswith("http"):
-                    public_host = f"https://{public_host}"
-                clean_path = m_url.lstrip("./").lstrip("/")
-                m_url = f"{public_host}/{clean_path}"
-
-            await whatsapp.send_media(
-                wa_id, media["type"], m_url,
-                caption=media.get("caption"), filename=media.get("filename"),
-            )
-        except Exception as media_err:
-            logger.warning("Could not send lesson media (non-blocking): %s", media_err)
-
+    # 5. Next step buttons
     await whatsapp.send_buttons(
         wa_id,
-        "Lesson complete - what would you like to do?",
+        "Module complete - choose an option below:",
         [
+            {"id": READY_QUIZ, "title": "Continue to Quiz"},
             {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
-            {"id": READY_QUIZ, "title": "Continue"},
         ],
         footer="Ask a question or continue to the quiz",
     )

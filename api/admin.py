@@ -67,7 +67,8 @@ async def admin_logo():
 async def login_page(error: Optional[str] = None):
     error_banner = f"""
     <div style="background:#fee2e2;border:1px solid #ef4444;color:#b91c1c;padding:12px 16px;border-radius:10px;margin-bottom:18px;font-size:14px;display:flex;align-items:center;gap:8px;">
-        <span>&#x26A0;&#xFE0F;</span> <span>{error}</span>
+        <svg style="width:16px;height:16px;flex-shrink:0;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+        <span>{error}</span>
     </div>
     """ if error else ""
 
@@ -427,7 +428,7 @@ async def admin_dashboard(request: Request):
                 <div style="display:flex;align-items:center;gap:8px;">
                     <span style="font-weight:700;color:#0f172a;">{phone}</span>
                     <a href="https://wa.me/{clean_phone}" target="_blank" rel="noopener noreferrer" class="wa-btn" title="Open chat with teacher on WhatsApp">
-                        <span>&#x1F4AC;</span> WhatsApp
+                        WhatsApp
                     </a>
                 </div>
             </td>
@@ -445,9 +446,9 @@ async def admin_dashboard(request: Request):
             <td style="text-align:center;font-weight:700;color:#334155;">{messages}</td>
             <td><span class="badge {assess_badge}">{assess_done}</span></td>
             <td class="cell-actions">
-                <button class="btn-action btn-view" onclick="openUserModal('{phone}')">&#x1F441;&#xFE0F; Journey</button>
-                <button class="btn-action btn-reset" onclick="resetUser('{phone}')">&#x21BA; Reset</button>
-                <button class="btn-action btn-reset" style="color:#ef4444;border-color:#fecaca;" onclick="deleteUser('{phone}')">&#x1F5D1;&#xFE0F; Delete</button>
+                <button class="btn-action btn-view" onclick="openUserModal('{phone}')">Journey</button>
+                <button class="btn-action btn-reset" onclick="resetUser('{phone}')">Reset</button>
+                <button class="btn-action btn-reset" style="color:#ef4444;border-color:#fecaca;" onclick="deleteUser('{phone}')">Delete</button>
             </td>
         </tr>
         """
@@ -476,10 +477,9 @@ async def admin_dashboard(request: Request):
     <tr>
         <td colspan="7" style="text-align:center;padding:48px 24px;">
             <div style="max-width:440px;margin:0 auto;color:#64748b;">
-                <div style="font-size:48px;margin-bottom:12px;">&#x1F4F1;</div>
                 <h3 style="font-size:16px;font-weight:700;color:#0f172a;margin-bottom:6px;">Waiting for First WhatsApp Learner</h3>
                 <p style="font-size:13px;line-height:1.5;margin-bottom:16px;">
-                    The system is connected to the live database and monitoring incoming messages. Have a teacher message <b>"hi"</b> on WhatsApp to enroll.
+                    The system is connected to the database and monitoring incoming messages. Have an educator message <b>"hi"</b> on WhatsApp to enroll.
                 </p>
                 <span class="badge badge-green"><span class="badge-dot"></span> Live DB Sync Ready</span>
             </div>
@@ -489,7 +489,6 @@ async def admin_dashboard(request: Request):
 
     empty_activity_state = """
     <div style="text-align:center;padding:32px 16px;color:#94a3b8;font-size:13px;">
-        <div style="font-size:28px;margin-bottom:8px;">&#x23F3;</div>
         No learning events logged yet.<br>New actions appear here in real-time.
     </div>
     """
@@ -1133,37 +1132,51 @@ async def admin_dashboard(request: Request):
         <div class="nav-actions">
             <div class="live-status-pill">
                 <span class="pulse-beacon"></span>
-                <span>Live DB Connected</span>
+                <span>Live Database Connected</span>
             </div>
             <div class="db-badge">
                 Backend: {backend.upper()} ({db_path})
             </div>
             <button id="refreshBtn" onclick="refreshDashboardData()" class="btn btn-primary" title="Poll and refresh latest data from live database">
-                <span id="refreshIcon">&#x21BB;</span>
+                <svg id="refreshIcon" style="width:14px;height:14px;display:inline-block;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
                 <span>Refresh</span>
             </button>
             <a href="/admin/export/csv" class="btn" title="Download all learner records as CSV">
-                <span>&#x1F4E5;</span>
                 <span>Export CSV</span>
             </a>
             <a href="/admin/logout" class="btn" title="Sign out from dashboard">
-                <span>&#x23FB;</span>
                 <span>Logout</span>
             </a>
         </div>
     </header>
 
     <div class="dashboard-container">
-        <!-- Meta WhatsApp Cloud API Diagnostic & Tester Card -->
+        <!-- Ephemeral Storage Guidance Banner (only shown if running SQLite in serverless) -->
+        {f'''
+        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:14px;padding:16px 20px;margin-bottom:24px;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;box-shadow:0 1px 3px rgba(37,99,235,0.06);">
+            <div>
+                <div style="font-weight:700;color:#1e40af;font-size:14px;margin-bottom:4px;display:flex;align-items:center;gap:6px;">
+                    <svg style="width:16px;height:16px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    <span>Permanent Cloud Storage Recommendation</span>
+                </div>
+                <div style="color:#1e3a8a;font-size:13px;line-height:1.5;">
+                    Vercel serverless containers are ephemeral. To ensure your learner progress, quiz scores, and registrations persist permanently across all container recycles, add free <b>Upstash Redis</b> in your Vercel Project Settings (Environment Variables: <code>UPSTASH_REDIS_REST_URL</code> and <code>UPSTASH_REDIS_REST_TOKEN</code>).
+                </div>
+            </div>
+            <span style="font-size:11px;font-weight:700;background:#dbeafe;color:#1e40af;padding:4px 10px;border-radius:9999px;white-space:nowrap;">SQLite (/tmp)</span>
+        </div>
+        ''' if data.get('is_ephemeral') else ''}
+
+        <!-- Meta WhatsApp Cloud API Live Health -->
         <div style="background:#ffffff;border:1px solid var(--border);border-radius:16px;padding:20px 24px;margin-bottom:28px;box-shadow:var(--shadow-sm);">
             <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
                 <div style="display:flex;align-items:center;gap:12px;">
-                    <div style="width:42px;height:42px;border-radius:10px;background:#25D366;color:#ffffff;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:bold;box-shadow:0 4px 10px rgba(37,211,102,0.3);">
-                        &#x260E;
+                    <div style="width:42px;height:42px;border-radius:10px;background:#25D366;color:#ffffff;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 10px rgba(37,211,102,0.25);">
+                        <svg width="22" height="22" fill="currentColor" viewBox="0 0 24 24"><path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946.003-6.556 5.338-11.891 11.893-11.891 3.181.001 6.167 1.24 8.413 3.488 2.245 2.248 3.481 5.236 3.48 8.414-.003 6.557-5.338 11.892-11.893 11.892-1.99-.001-3.951-.5-5.688-1.448l-6.305 1.654zm6.597-3.807c1.676.995 3.276 1.591 5.392 1.592 5.448 0 9.886-4.434 9.889-9.885.002-5.462-4.415-9.89-9.881-9.892-5.452 0-9.887 4.434-9.889 9.884-.001 2.225.651 3.891 1.746 5.634l-.999 3.648 3.742-.981z"/></svg>
                     </div>
                     <div>
                         <h3 style="font-size:16px;font-weight:700;color:#0f172a;margin:0;">Meta WhatsApp Cloud API Live Health</h3>
-                        <p style="font-size:12px;color:#64748b;margin:2px 0 0 0;">Webhook status, environment credentials & live message tester</p>
+                        <p style="font-size:12px;color:#64748b;margin:2px 0 0 0;">Webhook status, credentials & live message tester</p>
                     </div>
                 </div>
                 <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -1175,7 +1188,7 @@ async def admin_dashboard(request: Request):
 
             <div style="display:grid;grid-template-columns:1.3fr 1.2fr;gap:20px;background:#f8fafc;padding:16px;border-radius:12px;border:1px solid #f1f5f9;">
                 <div>
-                    <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;letter-spacing:0.5px;margin-bottom:6px;">Meta Developer Portal Webhook Callback URL</div>
+                    <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;letter-spacing:0.5px;margin-bottom:6px;">Meta Webhook Callback URL</div>
                     <div style="display:flex;align-items:center;gap:8px;">
                         <input id="webhookUrlInput" type="text" readonly value="{webhook_callback_url}" style="flex:1;background:#ffffff;border:1px solid #cbd5e1;padding:8px 12px;border-radius:8px;font-size:12px;font-family:'JetBrains Mono', monospace;color:#0f172a;">
                         <button onclick="copyWebhookUrl()" class="btn" style="padding:8px 14px;font-size:12px;font-weight:600;white-space:nowrap;">Copy URL</button>
@@ -1197,69 +1210,80 @@ async def admin_dashboard(request: Request):
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-top">
-                    <span class="stat-label">Total Learners</span>
-                    <div class="stat-icon-wrap" style="background:#dbeafe;color:#1d4ed8;">&#x1F465;</div>
+                    <span class="stat-label">Total Registered</span>
+                    <div class="stat-icon-wrap" style="background:#dbeafe;color:#1d4ed8;">
+                        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
+                    </div>
                 </div>
                 <div class="stat-val" id="kpiTotalUsers">{summary['total_users']}</div>
-                <div class="stat-meta">Unique phone numbers saved in DB</div>
+                <div class="stat-meta">Unique educators saved in database</div>
             </div>
 
             <div class="stat-card">
                 <div class="stat-top">
-                    <span class="stat-label">Active Learners</span>
-                    <div class="stat-icon-wrap" style="background:#eff6ff;color:#2563eb;">&#x1F4D6;</div>
+                    <span class="stat-label">Active Learning</span>
+                    <div class="stat-icon-wrap" style="background:#eff6ff;color:#2563eb;">
+                        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
+                    </div>
                 </div>
                 <div class="stat-val" style="color:#2563eb;" id="kpiActiveUsers">{summary['active_learners']}</div>
-                <div class="stat-meta">Currently studying modules & quizzes</div>
+                <div class="stat-meta">Engaged in modules and quizzes</div>
             </div>
 
             <div class="stat-card">
                 <div class="stat-top">
                     <span class="stat-label">Course Completed</span>
-                    <div class="stat-icon-wrap" style="background:#dcfce7;color:#15803d;">&#x1F393;</div>
+                    <div class="stat-icon-wrap" style="background:#dcfce7;color:#15803d;">
+                        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 14l9-5-9-5-9 5 9 5zm0 0l6.16-3.422a12.083 12.083 0 01.665 6.479A11.952 11.952 0 0012 20.055a11.952 11.952 0 00-6.824-2.998 12.078 12.078 0 01.665-6.479L12 14zm-4 6v-7.5"/></svg>
+                    </div>
                 </div>
                 <div class="stat-val" style="color:#10b981;" id="kpiCompletedUsers">{summary['completed_learners']}</div>
-                <div class="stat-meta"><b id="kpiCompletionRate">{summary.get('completion_rate', 0)}%</b> graduation completion rate</div>
+                <div class="stat-meta"><b id="kpiCompletionRate">{summary.get('completion_rate', 0)}%</b> completion rate</div>
             </div>
 
             <div class="stat-card">
                 <div class="stat-top">
                     <span class="stat-label">AI Readiness</span>
-                    <div class="stat-icon-wrap" style="background:#f3e8ff;color:#7e22ce;">&#x1F9E0;</div>
+                    <div class="stat-icon-wrap" style="background:#f3e8ff;color:#7e22ce;">
+                        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"/></svg>
+                    </div>
                 </div>
                 <div class="stat-val" style="color:#8b5cf6;" id="kpiAssessments">{summary['assessment_completed']}</div>
-                <div class="stat-meta">Teachers assessed on AI comfort</div>
+                <div class="stat-meta">Teachers assessed via survey</div>
             </div>
 
             <div class="stat-card">
                 <div class="stat-top">
-                    <span class="stat-label">Interactions Logged</span>
-                    <div class="stat-icon-wrap" style="background:#fef3c7;color:#b45309;">&#x26A1;</div>
+                    <span class="stat-label">Total Interactions</span>
+                    <div class="stat-icon-wrap" style="background:#fef3c7;color:#b45309;">
+                        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                    </div>
                 </div>
                 <div class="stat-val" style="color:#d97706;" id="kpiInteractions">{summary['total_interactions']}</div>
-                <div class="stat-meta">Messages, quizzes & AI questions</div>
+                <div class="stat-meta">Messages, quizzes, and AI tutor queries</div>
             </div>
 
             <div class="stat-card">
                 <div class="stat-top">
-                    <span class="stat-label">Peak Learning Time</span>
-                    <div class="stat-icon-wrap" style="background:#fee2e2;color:#b91c1c;">&#x23F0;</div>
+                    <span class="stat-label">Peak Study Hour</span>
+                    <div class="stat-icon-wrap" style="background:#fee2e2;color:#b91c1c;">
+                        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    </div>
                 </div>
                 <div class="stat-val" style="font-size:24px;padding-top:4px;" id="kpiPeakHour">{summary['peak_hour_utc']}</div>
-                <div class="stat-meta">Most active study hour across teachers</div>
+                <div class="stat-meta">Most active learning window (UTC)</div>
             </div>
         </div>
 
-        <!-- Charts Row 1: Pie / Donut Charts -->
+        <!-- Charts Row 1: Donut Charts -->
         <div class="charts-row-2col">
-            <!-- Pie Chart 1: Learner Status Breakdown -->
+            <!-- Donut Chart 1: Learner Status Breakdown -->
             <div class="chart-card">
                 <div class="chart-card-header">
                     <div class="chart-title-wrap">
-                        <span style="font-size:20px;">&#x1F3AF;</span>
                         <div>
                             <h2 class="chart-card-title">Learner Status Distribution</h2>
-                            <p class="chart-subtitle">Real-time breakdown of where students currently are in the course</p>
+                            <p class="chart-subtitle">Real-time breakdown of current learner progress stages</p>
                         </div>
                     </div>
                 </div>
@@ -1268,14 +1292,13 @@ async def admin_dashboard(request: Request):
                 </div>
             </div>
 
-            <!-- Pie Chart 2: Time-of-Day Study Habits -->
+            <!-- Donut Chart 2: Time-of-Day Study Habits -->
             <div class="chart-card">
                 <div class="chart-card-header">
                     <div class="chart-title-wrap">
-                        <span style="font-size:20px;">&#x1F305;</span>
                         <div>
-                            <h2 class="chart-card-title">When Are They Learning? (Time of Day)</h2>
-                            <p class="chart-subtitle">Teacher learning activity categorized by morning, afternoon, evening, and night</p>
+                            <h2 class="chart-card-title">When Are They Learning?</h2>
+                            <p class="chart-subtitle">Activity grouped by Morning, Afternoon, Evening, and Night</p>
                         </div>
                     </div>
                 </div>
@@ -1285,16 +1308,15 @@ async def admin_dashboard(request: Request):
             </div>
         </div>
 
-        <!-- Charts Row 2: 24-Hour Activity Rhythm & 11-Module Progression Funnel -->
+        <!-- Charts Row 2: 24-Hour Rhythm & 7-Module Funnel -->
         <div class="charts-row-3col">
-            <!-- 24-Hour Activity Line/Area Curve -->
+            <!-- 24-Hour Activity Area Curve -->
             <div class="chart-card">
                 <div class="chart-card-header">
                     <div class="chart-title-wrap">
-                        <span style="font-size:20px;">&#x1F4C8;</span>
                         <div>
-                            <h2 class="chart-card-title">24-Hour Learning Rhythm (UTC)</h2>
-                            <p class="chart-subtitle">Hourly distribution of all user messages, quizzes, and AI tutor queries</p>
+                            <h2 class="chart-card-title">24-Hour Activity Rhythm (UTC)</h2>
+                            <p class="chart-subtitle">Hourly volume of messages, quiz submissions, and AI queries</p>
                         </div>
                     </div>
                 </div>
@@ -1307,10 +1329,9 @@ async def admin_dashboard(request: Request):
             <div class="chart-card">
                 <div class="chart-card-header">
                     <div class="chart-title-wrap">
-                        <span style="font-size:20px;">&#x1F522;</span>
                         <div>
-                            <h2 class="chart-card-title">7-Module Funnel</h2>
-                            <p class="chart-subtitle">Learner progression & drop-off</p>
+                            <h2 class="chart-card-title">7-Module Progression Funnel</h2>
+                            <p class="chart-subtitle">Student progression through each curriculum module</p>
                         </div>
                     </div>
                 </div>
@@ -1324,10 +1345,9 @@ async def admin_dashboard(request: Request):
         <div class="chart-card" style="margin-bottom: 28px;">
             <div class="chart-card-header">
                 <div class="chart-title-wrap">
-                    <span style="font-size:20px;">&#x1F4CA;</span>
                     <div>
                         <h2 class="chart-card-title">Teacher AI Readiness Survey Insights</h2>
-                        <p class="chart-subtitle">Aggregated self-assessment data collected directly from educators</p>
+                        <p class="chart-subtitle">Aggregated self-assessment data from educators</p>
                     </div>
                 </div>
             </div>
@@ -1343,7 +1363,6 @@ async def admin_dashboard(request: Request):
                 <div class="table-toolbar">
                     <div>
                         <h2 style="font-size:16px;font-weight:700;color:#0f172a;display:flex;align-items:center;gap:8px;">
-                            <span>&#x1F465;</span>
                             <span>Learner Registry (<span id="tableCount">{len(users_list)}</span>)</span>
                         </h2>
                         <p style="font-size:12px;color:var(--text-muted);margin-top:2px;">All educators registered through WhatsApp</p>
@@ -1383,7 +1402,6 @@ async def admin_dashboard(request: Request):
             <div class="activity-feed-card">
                 <div class="chart-card-header" style="margin-bottom:14px;">
                     <div class="chart-title-wrap">
-                        <span style="font-size:18px;">&#x26A1;</span>
                         <h2 class="chart-card-title">Live Activity Stream</h2>
                     </div>
                     <span style="font-size:11px;color:var(--text-muted);font-weight:600;">Real-Time</span>
@@ -1627,30 +1645,35 @@ async def admin_dashboard(request: Request):
             const grid = document.getElementById('surveyInsightsGrid');
             if (!insights) return;
 
+            const q1 = insights.q1_ai_use || insights.ai_use || {{}};
+            const q2 = insights.q2_comfort || insights.comfort || {{}};
+            const q3 = insights.q3_challenge || insights.challenge || {{}};
+            const q4 = insights.q4_goal || insights.goal || {{}};
+
             grid.innerHTML = `
                 <div class="insight-card">
-                    <h4><span>&#x1F4CA;</span> AI Usage Frequency</h4>
-                    <div class="insight-row"><span>Never tried yet:</span><b>${{insights.ai_use['Never'] || 0}}</b></div>
-                    <div class="insight-row"><span>Sometimes:</span><b>${{insights.ai_use['Sometimes'] || 0}}</b></div>
-                    <div class="insight-row"><span>Regularly:</span><b>${{insights.ai_use['Regularly'] || 0}}</b></div>
+                    <h4>AI Usage Frequency</h4>
+                    <div class="insight-row"><span>Never:</span><b>${{q1.A || q1['Never'] || 0}}</b></div>
+                    <div class="insight-row"><span>Sometimes:</span><b>${{q1.B || q1['Sometimes'] || 0}}</b></div>
+                    <div class="insight-row"><span>Regularly:</span><b>${{q1.C || q1['Regularly'] || 0}}</b></div>
                 </div>
                 <div class="insight-card">
-                    <h4><span>&#x1F9E0;</span> Confidence Level</h4>
-                    <div class="insight-row"><span>Not confident:</span><b>${{insights.comfort['Not confident'] || 0}}</b></div>
-                    <div class="insight-row"><span>Somewhat confident:</span><b>${{insights.comfort['Somewhat confident'] || 0}}</b></div>
-                    <div class="insight-row"><span>Very confident:</span><b>${{insights.comfort['Very confident'] || 0}}</b></div>
+                    <h4>Confidence Level</h4>
+                    <div class="insight-row"><span>Not confident:</span><b>${{q2.A || q2['Not confident'] || 0}}</b></div>
+                    <div class="insight-row"><span>Somewhat confident:</span><b>${{q2.B || q2['Somewhat confident'] || 0}}</b></div>
+                    <div class="insight-row"><span>Very confident:</span><b>${{q2.C || q2['Very confident'] || 0}}</b></div>
                 </div>
                 <div class="insight-card">
-                    <h4><span>&#x26A0;&#xFE0F;</span> Primary Challenge</h4>
-                    <div class="insight-row"><span>Where to start:</span><b>${{insights.challenge["Don't know where to start"] || 0}}</b></div>
-                    <div class="insight-row"><span>Limited access/devices:</span><b>${{insights.challenge['Limited access/internet'] || 0}}</b></div>
-                    <div class="insight-row"><span>Misuse worries:</span><b>${{insights.challenge['Worried about misuse'] || 0}}</b></div>
+                    <h4>Primary Classroom Challenge</h4>
+                    <div class="insight-row"><span>Large Class Sizes (50+):</span><b>${{q3.A || q3['Large classes'] || 0}}</b></div>
+                    <div class="insight-row"><span>Limited Devices/Internet:</span><b>${{q3.B || q3['Limited devices'] || 0}}</b></div>
+                    <div class="insight-row"><span>Writing Effective Prompts:</span><b>${{q3.C || q3['Prompt writing'] || 0}}</b></div>
                 </div>
                 <div class="insight-card">
-                    <h4><span>&#x1F3AF;</span> Primary Course Goal</h4>
-                    <div class="insight-row"><span>Practical lesson ideas:</span><b>${{insights.goal['Practical lesson ideas'] || 0}}</b></div>
-                    <div class="insight-row"><span>Time-saving tools:</span><b>${{insights.goal['Time-saving tools'] || 0}}</b></div>
-                    <div class="insight-row"><span>Safe/Responsible AI:</span><b>${{insights.goal['Responsible & safe AI'] || 0}}</b></div>
+                    <h4>Primary Course Goal</h4>
+                    <div class="insight-row"><span>Practical Classroom Ideas:</span><b>${{q4.A || q4['Practical ideas'] || 0}}</b></div>
+                    <div class="insight-row"><span>Time-Saving Planning Tools:</span><b>${{q4.B || q4['Time saving'] || 0}}</b></div>
+                    <div class="insight-row"><span>Responsible & Ethical AI:</span><b>${{q4.C || q4['Ethical AI'] || 0}}</b></div>
                 </div>
             `;
         }}
@@ -1679,7 +1702,7 @@ async def admin_dashboard(request: Request):
 
                 // Update Charts
                 renderAllCharts(data);
-                renderSurveyCards(data.assessment_insights);
+                renderSurveyCards(data.assessment_insights || data.survey_insights);
 
                 // Re-render Table
                 renderTableRows(data.users);
@@ -1731,11 +1754,11 @@ async def admin_dashboard(request: Request):
                 if (data.success) {{
                     resDiv.style.background = '#dcfce7';
                     resDiv.style.color = '#166534';
-                    resDiv.innerHTML = '&#x2705; <b>Success!</b> Test ping sent to WhatsApp (' + phone + '). Check your phone!';
+                    resDiv.innerHTML = '<b>Success:</b> Test ping sent to WhatsApp (' + phone + '). Check your phone!';
                 }} else {{
                     resDiv.style.background = '#fee2e2';
                     resDiv.style.color = '#991b1b';
-                    resDiv.innerHTML = '&#x26A0;&#xFE0F; <b>Meta API Error:</b> ' + (data.error || 'Failed to send') +
+                    resDiv.innerHTML = '<b>Meta API Error:</b> ' + (data.error || 'Failed to send') +
                         (data.hint ? '<br><span style="font-size:12px;margin-top:6px;display:inline-block;color:#7f1d1d;"><b>Action required:</b> ' + data.hint + '</span>' : '');
                 }}
             }} catch (err) {{
@@ -1755,9 +1778,8 @@ async def admin_dashboard(request: Request):
                 <tr>
                     <td colspan="7" style="text-align:center;padding:48px 24px;">
                         <div style="max-width:440px;margin:0 auto;color:#64748b;">
-                            <div style="font-size:48px;margin-bottom:12px;">&#x1F4F1;</div>
                             <h3 style="font-size:16px;font-weight:700;color:#0f172a;margin-bottom:6px;">Waiting for First WhatsApp Learner</h3>
-                            <p style="font-size:13px;line-height:1.5;">The system is live and recording. Have a student message the bot on WhatsApp to see live metrics.</p>
+                            <p style="font-size:13px;line-height:1.5;">The system is live and recording. Have a teacher message the bot on WhatsApp to see live metrics.</p>
                         </div>
                     </td>
                 </tr>`;
@@ -1805,7 +1827,7 @@ async def admin_dashboard(request: Request):
                         <div style="display:flex;align-items:center;gap:8px;">
                             <span style="font-weight:700;color:#0f172a;">${{phone}}</span>
                             <a href="https://wa.me/${{clean_phone}}" target="_blank" rel="noopener noreferrer" class="wa-btn" title="Open chat with teacher on WhatsApp">
-                                <span>&#x1F4AC;</span> WhatsApp
+                                WhatsApp
                             </a>
                         </div>
                     </td>
@@ -1823,9 +1845,9 @@ async def admin_dashboard(request: Request):
                     <td style="text-align:center;font-weight:700;color:#334155;">${{messages}}</td>
                     <td><span class="badge ${{assess_badge}}">${{assess_done}}</span></td>
                     <td class="cell-actions">
-                        <button class="btn-action btn-view" onclick="openUserModal('${{phone}}')">&#x1F441;&#xFE0F; Journey</button>
-                        <button class="btn-action btn-reset" onclick="resetUser('${{phone}}')">&#x21BA; Reset</button>
-                        <button class="btn-action btn-reset" style="color:#ef4444;border-color:#fecaca;" onclick="deleteUser('${{phone}}')">&#x1F5D1;&#xFE0F; Delete</button>
+                        <button class="btn-action btn-view" onclick="openUserModal('${{phone}}')">Journey</button>
+                        <button class="btn-action btn-reset" onclick="resetUser('${{phone}}')">Reset</button>
+                        <button class="btn-action btn-reset" style="color:#ef4444;border-color:#fecaca;" onclick="deleteUser('${{phone}}')">Delete</button>
                     </td>
                 </tr>`;
             }});
@@ -1964,7 +1986,17 @@ async def admin_dashboard(request: Request):
     </script>
 </body>
 </html>"""
-    return HTMLResponse(content=html)
+    response = HTMLResponse(content=html)
+    q_pass = request.query_params.get("password") or request.query_params.get("pass")
+    if q_pass and q_pass == ADMIN_PASSWORD:
+        response.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=ADMIN_PASSWORD,
+            max_age=60 * 60 * 24 * 30,
+            httponly=True,
+            samesite="lax",
+        )
+    return response
 
 
 # Top-level fallback for admin mounted app

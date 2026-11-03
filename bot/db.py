@@ -5,10 +5,9 @@ Persistent storage and analytics engine for the WhatsApp Learning Bot.
 Saves users by their actual phone number (wa_id) and tracks learning activity.
 
 Supported Backends:
-1. SQLite (built-in sqlite3) - persists to data/portal.db (or /tmp/portal.db in serverless)
+1. Upstash Redis / Vercel KV - via UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN (HTTP REST via httpx)
 2. PostgreSQL / Supabase / Neon - via DATABASE_URL / POSTGRES_URL
-3. Upstash Redis / Vercel KV - via UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN (HTTP REST via httpx)
-4. JSON file backup - data/users.json
+3. SQLite (built-in sqlite3) - persists to data/portal.db (or /tmp/portal.db in serverless)
 """
 
 import copy
@@ -18,6 +17,8 @@ import logging
 import os
 import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
+
+import httpx
 
 logger = logging.getLogger("whatsapp_bot")
 
@@ -50,6 +51,26 @@ _ACTIVE_SQLITE_PATH: str = SQLITE_PATH
 _DB_INITIALIZED: bool = False
 
 
+def _format_relative_time(iso_str: str) -> str:
+    """Format an ISO timestamp to human-readable relative time string."""
+    if not iso_str:
+        return "Unknown"
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        diff = _get_utc_now() - dt
+        secs = int(diff.total_seconds())
+        if secs < 60:
+            return f"{secs}s ago"
+        elif secs < 3600:
+            return f"{secs // 60}m ago"
+        elif secs < 86400:
+            return f"{secs // 3600}h ago"
+        else:
+            return f"{secs // 86400}d ago"
+    except Exception:
+        return iso_str[:16].replace("T", " ")
+
+
 def _get_utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -65,6 +86,35 @@ def _ensure_dirs() -> None:
         except Exception:
             pass
 
+
+# ---------------------------------------------------------------------------
+# Upstash Redis REST Client (Pure HTTP via httpx, 100% Serverless Safe)
+# ---------------------------------------------------------------------------
+
+def _is_upstash_configured() -> bool:
+    return bool(UPSTASH_URL and UPSTASH_TOKEN)
+
+
+def _upstash_exec(command: list) -> Any:
+    """Execute a single Redis command via Upstash REST API."""
+    if not _is_upstash_configured():
+        raise RuntimeError("Upstash is not configured")
+
+    url = UPSTASH_URL.rstrip("/")
+    headers = {
+        "Authorization": f"Bearer {UPSTASH_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    with httpx.Client(timeout=8.0) as client:
+        resp = client.post(url, headers=headers, json=command)
+        if resp.status_code == 200:
+            return resp.json().get("result")
+        raise RuntimeError(f"Upstash API error {resp.status_code}: {resp.text}")
+
+
+# ---------------------------------------------------------------------------
+# SQLite Client (Built-in)
+# ---------------------------------------------------------------------------
 
 def _get_sqlite_connection() -> sqlite3.Connection:
     global _ACTIVE_SQLITE_PATH
@@ -96,7 +146,59 @@ def init_db() -> str:
     if _DB_INITIALIZED:
         return _ACTIVE_BACKEND
 
-    # Test writability of preferred SQLITE_PATH once
+    # 1. Try Upstash Redis if configured
+    if _is_upstash_configured():
+        try:
+            res = _upstash_exec(["PING"])
+            if res == "PONG":
+                _ACTIVE_BACKEND = "upstash_redis"
+                _DB_INITIALIZED = True
+                logger.info("Database initialized successfully with Upstash Redis REST")
+                return _ACTIVE_BACKEND
+        except Exception as upstash_err:
+            logger.warning(f"Failed to connect to Upstash Redis: {upstash_err}. Falling back to SQLite.")
+
+    # 2. Try PostgreSQL if configured and driver available
+    if DATABASE_URL:
+        try:
+            import psycopg2
+            conn = psycopg2.connect(DATABASE_URL)
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        phone_number VARCHAR(64) PRIMARY KEY,
+                        phase VARCHAR(32) DEFAULT 'idle',
+                        unit_id VARCHAR(64),
+                        lesson_index INT,
+                        completed_lessons TEXT DEFAULT '[]',
+                        quiz_answers TEXT DEFAULT '{}',
+                        assessment_answers TEXT DEFAULT '{}',
+                        tutor_history TEXT DEFAULT '[]',
+                        state_json TEXT,
+                        created_at VARCHAR(64),
+                        last_seen VARCHAR(64),
+                        total_messages INT DEFAULT 0
+                    );
+                    CREATE TABLE IF NOT EXISTS activity_logs (
+                        id SERIAL PRIMARY KEY,
+                        phone_number VARCHAR(64) NOT NULL,
+                        event_type VARCHAR(64) NOT NULL,
+                        details TEXT,
+                        timestamp VARCHAR(64) NOT NULL,
+                        hour_of_day INT NOT NULL,
+                        day_of_week INT NOT NULL
+                    );
+                """)
+                conn.commit()
+            conn.close()
+            _ACTIVE_BACKEND = "postgresql"
+            _DB_INITIALIZED = True
+            logger.info("Database initialized successfully with PostgreSQL")
+            return _ACTIVE_BACKEND
+        except Exception as pg_err:
+            logger.warning(f"PostgreSQL connection failed ({pg_err}), falling back to SQLite.")
+
+    # 3. SQLite setup
     try:
         _ensure_dirs()
         dir_name = os.path.dirname(SQLITE_PATH)
@@ -147,87 +249,12 @@ def init_db() -> str:
         conn.close()
         _ACTIVE_BACKEND = "sqlite"
         _DB_INITIALIZED = True
-        logger.info(f"Database initialized successfully with SQLite at {SQLITE_PATH}")
+        logger.info(f"Database initialized successfully with SQLite at {_ACTIVE_SQLITE_PATH}")
     except Exception as e:
         logger.error(f"Failed to initialize SQLite: {e}", exc_info=True)
-        _ACTIVE_BACKEND = "memory/json"
-
-    # Migrate any legacy users from JSON if SQLite is empty
-    _migrate_legacy_json()
+        _ACTIVE_BACKEND = "memory"
 
     return _ACTIVE_BACKEND
-
-
-def _migrate_legacy_json() -> None:
-    """Imports any existing data/users.json into SQLite on first startup."""
-    try:
-        legacy_users = {}
-        for path in (USERS_FILE,):
-            if path and os.path.exists(path):
-                try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        users = data.get("users") if isinstance(data.get("users"), dict) else data
-                        if isinstance(users, dict):
-                            legacy_users.update(users)
-                except Exception:
-                    pass
-
-        if not legacy_users:
-            return
-
-        conn = _get_sqlite_connection()
-        with conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM users")
-            count = cursor.fetchone()[0]
-            if count == 0 and legacy_users:
-                logger.info(f"Migrating {len(legacy_users)} legacy users from JSON into database...")
-                for phone, st in legacy_users.items():
-                    if not isinstance(st, dict):
-                        continue
-                    phase = st.get("phase", "idle")
-                    unit_id = st.get("unit_id")
-                    lesson_idx = st.get("lesson_index")
-                    completed = json.dumps(st.get("completed_lessons") or [])
-                    quizzes = json.dumps(st.get("quiz_answers") or {})
-                    assessment = json.dumps(st.get("assessment_answers") or {})
-                    tutor = json.dumps(st.get("tutor_history") or [])
-                    created_at = st.get("created_at") or _get_utc_now_iso()
-                    last_seen = st.get("last_seen") or created_at
-                    total_msg = st.get("total_messages", 1)
-                    raw_json = json.dumps(st)
-
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO users (
-                            phone_number, phase, unit_id, lesson_index,
-                            completed_lessons, quiz_answers, assessment_answers,
-                            tutor_history, state_json, created_at, last_seen, total_messages
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        str(phone), phase, unit_id, lesson_idx,
-                        completed, quizzes, assessment,
-                        tutor, raw_json, created_at, last_seen, total_msg
-                    ))
-        conn.close()
-    except Exception as e:
-        logger.warning(f"Legacy JSON migration error: {e}")
-
-
-def _save_json_backup(all_users: dict) -> None:
-    """Best-effort atomic write to users.json for safety and offline inspection."""
-    _ensure_dirs()
-    for candidate in (USERS_FILE, TMP_USERS_FILE, SYSTEM_TMP_USERS_FILE):
-        if not candidate:
-            continue
-        try:
-            os.makedirs(os.path.dirname(candidate), exist_ok=True)
-            tmp = candidate + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"users": all_users, "updated_at": _get_utc_now_iso()}, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, candidate)
-        except Exception:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -241,9 +268,23 @@ def get_user_state(phone_number: str) -> Optional[dict]:
     if not clean_phone:
         return None
 
+    # Upstash Redis check
+    if _ACTIVE_BACKEND == "upstash_redis":
+        try:
+            raw = _upstash_exec(["HGET", "edtech:users", clean_phone])
+            if raw:
+                st = json.loads(raw)
+                st["phone_number"] = clean_phone
+                _MEMORY_CACHE[clean_phone] = copy.deepcopy(st)
+                return st
+        except Exception as e:
+            logger.error(f"Upstash HGET error for {clean_phone}: {e}")
+
+    # Memory cache check
     if clean_phone in _MEMORY_CACHE:
         return copy.deepcopy(_MEMORY_CACHE[clean_phone])
 
+    # SQLite read
     try:
         conn = _get_sqlite_connection()
         cursor = conn.cursor()
@@ -304,7 +345,16 @@ def save_user_state(phone_number: str, state_dict: dict) -> None:
     state["total_messages"] = state.get("total_messages", 0) + 1
 
     _MEMORY_CACHE[clean_phone] = copy.deepcopy(state)
+    raw_json = json.dumps(state, ensure_ascii=False)
 
+    # 1. Upstash Redis save
+    if _ACTIVE_BACKEND == "upstash_redis":
+        try:
+            _upstash_exec(["HSET", "edtech:users", clean_phone, raw_json])
+        except Exception as e:
+            logger.error(f"Failed to save user {clean_phone} to Upstash Redis: {e}")
+
+    # 2. SQLite save (always maintain local sync if possible)
     phase = state.get("phase", "idle")
     unit_id = state.get("unit_id")
     lesson_idx = state.get("lesson_index")
@@ -312,7 +362,6 @@ def save_user_state(phone_number: str, state_dict: dict) -> None:
     quiz_ans = json.dumps(state.get("quiz_answers") or {})
     assess_ans = json.dumps(state.get("assessment_answers") or {})
     tutor_hist = json.dumps(state.get("tutor_history") or [])
-    raw_json = json.dumps(state, ensure_ascii=False)
     created_at = state.get("created_at")
     last_seen = state.get("last_seen")
     total_msg = state.get("total_messages", 1)
@@ -335,11 +384,6 @@ def save_user_state(phone_number: str, state_dict: dict) -> None:
     except Exception as e:
         logger.error(f"Failed to save user {clean_phone} to SQLite: {e}")
 
-    try:
-        _save_json_backup(_MEMORY_CACHE)
-    except Exception:
-        pass
-
 
 def delete_user(phone_number: str) -> bool:
     """Delete a user and their activity from the database."""
@@ -347,13 +391,18 @@ def delete_user(phone_number: str) -> bool:
     clean_phone = str(phone_number).strip()
     _MEMORY_CACHE.pop(clean_phone, None)
 
+    if _ACTIVE_BACKEND == "upstash_redis":
+        try:
+            _upstash_exec(["HDEL", "edtech:users", clean_phone])
+        except Exception as e:
+            logger.error(f"Upstash HDEL error for {clean_phone}: {e}")
+
     try:
         conn = _get_sqlite_connection()
         with conn:
             conn.execute("DELETE FROM users WHERE phone_number = ?", (clean_phone,))
             conn.execute("DELETE FROM activity_logs WHERE phone_number = ?", (clean_phone,))
         conn.close()
-        _save_json_backup(_MEMORY_CACHE)
         return True
     except Exception as e:
         logger.error(f"Error deleting user {clean_phone}: {e}")
@@ -364,6 +413,38 @@ def get_all_users() -> Dict[str, dict]:
     """Return all users mapped by phone_number."""
     init_db()
     users: Dict[str, dict] = {}
+
+    # 1. Upstash Redis
+    if _ACTIVE_BACKEND == "upstash_redis":
+        try:
+            raw_data = _upstash_exec(["HGETALL", "edtech:users"])
+            if isinstance(raw_data, dict):
+                for phone, val in raw_data.items():
+                    try:
+                        parsed = json.loads(val) if isinstance(val, str) else val
+                        parsed["phone_number"] = phone
+                        users[phone] = parsed
+                        _MEMORY_CACHE[phone] = parsed
+                    except Exception:
+                        pass
+                return copy.deepcopy(users)
+            elif isinstance(raw_data, list):
+                # Redis returns alternating [key1, val1, key2, val2, ...]
+                for i in range(0, len(raw_data) - 1, 2):
+                    phone = raw_data[i]
+                    val = raw_data[i + 1]
+                    try:
+                        parsed = json.loads(val) if isinstance(val, str) else val
+                        parsed["phone_number"] = phone
+                        users[phone] = parsed
+                        _MEMORY_CACHE[phone] = parsed
+                    except Exception:
+                        pass
+                return copy.deepcopy(users)
+        except Exception as e:
+            logger.error(f"Upstash HGETALL error: {e}")
+
+    # 2. SQLite
     try:
         conn = _get_sqlite_connection()
         cursor = conn.cursor()
@@ -411,10 +492,7 @@ def get_all_users() -> Dict[str, dict]:
 # ---------------------------------------------------------------------------
 
 def log_activity(phone_number: str, event_type: str, details: str = "") -> None:
-    """
-    Log a learning activity event with precise UTC timestamp, hour, and day.
-    Tracks exact times when users are learning.
-    """
+    """Log an activity event with precise UTC timestamp, hour, and day."""
     init_db()
     clean_phone = str(phone_number).strip()
     now = _get_utc_now()
@@ -422,6 +500,24 @@ def log_activity(phone_number: str, event_type: str, details: str = "") -> None:
     hour = now.hour
     day = now.weekday()  # 0=Monday, 6=Sunday
 
+    log_entry = {
+        "phone_number": clean_phone,
+        "event_type": event_type,
+        "details": details,
+        "timestamp": now_iso,
+        "hour_of_day": hour,
+        "day_of_week": day,
+    }
+
+    # Upstash Redis list
+    if _ACTIVE_BACKEND == "upstash_redis":
+        try:
+            _upstash_exec(["LPUSH", "edtech:activity", json.dumps(log_entry)])
+            _upstash_exec(["LTRIM", "edtech:activity", 0, 1999])
+        except Exception as e:
+            logger.warning(f"Upstash LPUSH log error: {e}")
+
+    # SQLite
     try:
         conn = _get_sqlite_connection()
         with conn:
@@ -437,7 +533,27 @@ def log_activity(phone_number: str, event_type: str, details: str = "") -> None:
 def get_activity_logs(limit: int = 50, phone_number: Optional[str] = None) -> List[dict]:
     """Retrieve recent activity logs, optionally filtered by phone number."""
     init_db()
-    logs = []
+    logs: List[dict] = []
+
+    # Upstash Redis
+    if _ACTIVE_BACKEND == "upstash_redis":
+        try:
+            raw_entries = _upstash_exec(["LRANGE", "edtech:activity", 0, limit * 2]) or []
+            for item in raw_entries:
+                try:
+                    entry = json.loads(item) if isinstance(item, str) else item
+                    if phone_number and entry.get("phone_number") != str(phone_number).strip():
+                        continue
+                    logs.append(entry)
+                    if len(logs) >= limit:
+                        break
+                except Exception:
+                    pass
+            return logs
+        except Exception as e:
+            logger.error(f"Upstash LRANGE error: {e}")
+
+    # SQLite
     try:
         conn = _get_sqlite_connection()
         cursor = conn.cursor()
@@ -472,15 +588,8 @@ def get_activity_logs(limit: int = 50, phone_number: Optional[str] = None) -> Li
 
 def get_analytics_summary() -> dict:
     """
-    Compute comprehensive analytics from actual real database records:
-    - User totals (total, active, completed, assessment)
-    - "When are they learning?" Hourly distribution (0-23 hours)
-    - "When are they learning?" Days of week & daily trends
-    - Learner status breakdown (Pie / Donut chart)
-    - Time-of-day learning breakdown (Pie / Donut chart)
-    - 11-Module progression funnel
-    - Assessment response insights
-    - Recent activity feed
+    Compute comprehensive analytics from actual real database records.
+    ZERO mock or sample data.
     """
     init_db()
     all_users = get_all_users()
@@ -507,10 +616,8 @@ def get_analytics_summary() -> dict:
     except Exception:
         pass
 
-    # Funnel per lesson index (0 to total_mods-1)
     lesson_funnel = [0] * total_mods
 
-    # Format user rows
     users_list = []
     for phone, u in all_users.items():
         phase = u.get("phase", "idle")
@@ -525,231 +632,165 @@ def get_analytics_summary() -> dict:
             completed_learners += 1
             status_distribution["completed"] += 1
             progress_pct = 100
-        elif phase == "lesson":
+        elif phase in ("lesson", "quiz", "tutor"):
             active_learners += 1
-            status_distribution["lesson"] += 1
-            curr_idx = lesson_idx if lesson_idx is not None else 0
-            progress_pct = min(100, round((curr_idx / total_mods) * 100))
-            if 0 <= curr_idx < total_mods:
-                lesson_funnel[curr_idx] += 1
-        elif phase == "quiz":
-            active_learners += 1
-            status_distribution["quiz"] += 1
-            curr_idx = lesson_idx if lesson_idx is not None else 0
-            progress_pct = min(100, round((curr_idx / total_mods) * 100))
-            if 0 <= curr_idx < total_mods:
-                lesson_funnel[curr_idx] += 1
-        elif phase == "tutor":
-            active_learners += 1
-            status_distribution["tutor"] += 1
+            status_distribution[phase] += 1
             curr_idx = lesson_idx if lesson_idx is not None else 0
             progress_pct = min(100, round((curr_idx / total_mods) * 100))
             if 0 <= curr_idx < total_mods:
                 lesson_funnel[curr_idx] += 1
         elif phase == "assessment":
             status_distribution["assessment"] += 1
-            progress_pct = 0
+            progress_pct = 5
         else:
             status_distribution["idle"] += 1
             progress_pct = 0
 
-        if assess_answers and len(assess_answers) >= 4:
+        if len(assess_answers) >= 4:
             assessment_completed += 1
 
-        last_seen = u.get("last_seen") or u.get("created_at") or ""
-        created_at = u.get("created_at") or ""
-        relative_last_seen = _format_relative_time(last_seen)
+        curr_title = f"Module {(lesson_idx or 0) + 1}"
+        try:
+            from content import curriculum
+            mod = curriculum.get_lesson(curriculum.DEFAULT_UNIT_ID, lesson_idx or 0)
+            if mod:
+                curr_title = mod.get("title", curr_title)
+        except Exception:
+            pass
 
-        current_module_title = f"Module {(lesson_idx + 1) if lesson_idx is not None else 1}"
-        if phase == "complete":
-            current_module_title = f"Course Completed ({total_mods}/{total_mods})"
-        elif phase == "assessment":
-            current_module_title = f"AI Self-Assessment ({len(assess_answers)}/4)"
-        elif phase == "idle":
-            current_module_title = "Not started"
+        last_seen = u.get("last_seen", "")
+        rel_time = "Never"
+        if last_seen:
+            try:
+                dt = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+                diff = _get_utc_now() - dt
+                secs = int(diff.total_seconds())
+                if secs < 60:
+                    rel_time = f"{secs}s ago"
+                elif secs < 3600:
+                    rel_time = f"{secs // 60}m ago"
+                elif secs < 86400:
+                    rel_time = f"{secs // 3600}h ago"
+                else:
+                    rel_time = f"{secs // 86400}d ago"
+            except Exception:
+                rel_time = last_seen[:10]
 
         users_list.append({
             "phone_number": phone,
             "phase": phase,
             "lesson_index": lesson_idx,
+            "current_module_title": curr_title,
             "progress_percent": progress_pct,
-            "current_module_title": current_module_title,
-            "completed_lessons_count": len(completed_lessons),
-            "quiz_answers_count": len(quiz_answers),
-            "assessment_answers": assess_answers,
-            "created_at": created_at,
-            "last_seen": last_seen,
-            "last_seen_relative": relative_last_seen,
+            "completed_count": len(completed_lessons),
             "total_messages": msg_count,
+            "last_seen": last_seen,
+            "last_seen_relative": rel_time,
+            "assessment_answers": assess_answers,
+            "quiz_answers": quiz_answers,
+            "created_at": u.get("created_at", ""),
         })
 
-    # Sort users by last_seen descending
-    users_list.sort(key=lambda x: x.get("last_seen") or "", reverse=True)
+    users_list.sort(key=lambda x: x.get("last_seen", ""), reverse=True)
 
-    # Hourly learning activity (0-23)
-    hourly_counts = [0] * 24
-    day_counts = [0] * 7  # 0=Mon, 6=Sun
+    # Activity by hour & day of week
+    hourly_distribution = [0] * 24
+    daily_distribution = [0] * 7
+    all_logs = get_activity_logs(limit=500)
+    for log in all_logs:
+        h = log.get("hour_of_day")
+        if h is not None and 0 <= h < 24:
+            hourly_distribution[h] += 1
+        d = log.get("day_of_week")
+        if d is not None and 0 <= d < 7:
+            daily_distribution[d] += 1
 
-    try:
-        conn = _get_sqlite_connection()
-        cursor = conn.cursor()
+    time_of_day_slots = {
+        "Morning (06:00 - 12:00)": sum(hourly_distribution[6:12]),
+        "Afternoon (12:00 - 18:00)": sum(hourly_distribution[12:18]),
+        "Evening (18:00 - 23:00)": sum(hourly_distribution[18:23]),
+        "Night (23:00 - 06:00)": hourly_distribution[23] + sum(hourly_distribution[0:6]),
+    }
 
-        cursor.execute("SELECT hour_of_day, COUNT(*) FROM activity_logs GROUP BY hour_of_day")
-        for h, count in cursor.fetchall():
-            if 0 <= h < 24:
-                hourly_counts[h] = count
-
-        cursor.execute("SELECT day_of_week, COUNT(*) FROM activity_logs GROUP BY day_of_week")
-        for d, count in cursor.fetchall():
-            if 0 <= d < 7:
-                day_counts[d] = count
-
-        cursor.execute("SELECT COUNT(*) FROM activity_logs")
-        logged_events_count = cursor.fetchone()[0]
-        if logged_events_count > 0:
-            total_interactions = max(total_interactions, logged_events_count)
-
-        conn.close()
-    except Exception as e:
-        logger.warning(f"Error calculating activity analytics: {e}")
-
-    # Fetch last 40 activity items
-    recent_activity = get_activity_logs(limit=40)
-
-    # Time of day buckets
-    morning = sum(hourly_counts[6:12])     # 6am - 12pm
-    afternoon = sum(hourly_counts[12:17])  # 12pm - 5pm
-    evening = sum(hourly_counts[17:22])    # 5pm - 10pm
-    night = sum(hourly_counts[22:24]) + sum(hourly_counts[0:6])  # 10pm - 6am
-
-    # Peak learning hour
-    peak_hour = 0
-    max_h_count = 0
-    for h, c in enumerate(hourly_counts):
-        if c > max_h_count:
-            max_h_count = c
-            peak_hour = h
-
-    days_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    daily_formatted = [{"day": days_labels[i], "count": day_counts[i]} for i in range(7)]
-
-    # Assessment insights aggregation
-    assessment_summary = {
-        "ai_use": {"Never": 0, "Sometimes": 0, "Regularly": 0},
-        "comfort": {"Not confident": 0, "Somewhat confident": 0, "Very confident": 0},
-        "challenge": {"Don't know where to start": 0, "Limited access/internet": 0, "Worried about misuse": 0},
-        "goal": {"Practical lesson ideas": 0, "Time-saving tools": 0, "Responsible & safe AI": 0},
+    # Assessment insights
+    survey_stats = {
+        "q1_ai_use": {"A": 0, "B": 0, "C": 0},
+        "q2_comfort": {"A": 0, "B": 0, "C": 0},
+        "q3_challenge": {"A": 0, "B": 0, "C": 0},
+        "q4_goal": {"A": 0, "B": 0, "C": 0},
     }
     for u in all_users.values():
         ans = u.get("assessment_answers") or {}
-        if ans.get("ai_use") == "A":
-            assessment_summary["ai_use"]["Never"] += 1
-        elif ans.get("ai_use") == "B":
-            assessment_summary["ai_use"]["Sometimes"] += 1
-        elif ans.get("ai_use") == "C":
-            assessment_summary["ai_use"]["Regularly"] += 1
+        if ans.get("ai_use") in survey_stats["q1_ai_use"]:
+            survey_stats["q1_ai_use"][ans["ai_use"]] += 1
+        if ans.get("comfort") in survey_stats["q2_comfort"]:
+            survey_stats["q2_comfort"][ans["comfort"]] += 1
+        if ans.get("challenge") in survey_stats["q3_challenge"]:
+            survey_stats["q3_challenge"][ans["challenge"]] += 1
+        if ans.get("goal") in survey_stats["q4_goal"]:
+            survey_stats["q4_goal"][ans["goal"]] += 1
 
-        if ans.get("comfort") == "A":
-            assessment_summary["comfort"]["Not confident"] += 1
-        elif ans.get("comfort") == "B":
-            assessment_summary["comfort"]["Somewhat confident"] += 1
-        elif ans.get("comfort") == "C":
-            assessment_summary["comfort"]["Very confident"] += 1
+    is_serverless = bool(os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
+    is_ephemeral = is_serverless and _ACTIVE_BACKEND == "sqlite"
 
-        if ans.get("challenge") == "A":
-            assessment_summary["challenge"]["Don't know where to start"] += 1
-        elif ans.get("challenge") == "B":
-            assessment_summary["challenge"]["Limited access/internet"] += 1
-        elif ans.get("challenge") == "C":
-            assessment_summary["challenge"]["Worried about misuse"] += 1
+    peak_h = max(range(24), key=lambda i: hourly_distribution[i]) if any(hourly_distribution) else 14
+    peak_str = f"{peak_h:02d}:00 UTC"
+    comp_rate = round((completed_learners / total_users * 100), 1) if total_users > 0 else 0
 
-        if ans.get("goal") == "A":
-            assessment_summary["goal"]["Practical lesson ideas"] += 1
-        elif ans.get("goal") == "B":
-            assessment_summary["goal"]["Time-saving tools"] += 1
-        elif ans.get("goal") == "C":
-            assessment_summary["goal"]["Responsible & safe AI"] += 1
-
-    completion_rate = round((completed_learners / total_users * 100), 1) if total_users > 0 else 0
-    avg_progress = round(sum(u["progress_percent"] for u in users_list) / total_users, 1) if total_users > 0 else 0
-
-    return {
-        "status": "ok",
-        "backend": _ACTIVE_BACKEND,
-        "database_path": SQLITE_PATH,
-        "summary": {
-            "total_users": total_users,
-            "active_learners": active_learners,
-            "completed_learners": completed_learners,
-            "assessment_completed": assessment_completed,
-            "total_interactions": total_interactions,
-            "completion_rate": completion_rate,
-            "average_progress": avg_progress,
-            "peak_hour_utc": f"{peak_hour:02d}:00 UTC",
-            "peak_hour_count": max_h_count,
-        },
-        "status_distribution": {
-            "labels": ["Course Completed", "Learning Lessons", "Taking Quiz", "AI Tutor Mode", "AI Self-Assessment", "Idle / Menu"],
-            "counts": [
-                status_distribution["completed"],
-                status_distribution["lesson"],
-                status_distribution["quiz"],
-                status_distribution["tutor"],
-                status_distribution["assessment"],
-                status_distribution["idle"],
-            ],
-            "raw": status_distribution,
-        },
-        "when_are_they_learning": {
-            "hourly_counts": hourly_counts,
-            "hourly_labels": [f"{h:02d}:00" for h in range(24)],
-            "time_of_day": {
-                "Morning (06:00 - 12:00)": morning,
-                "Afternoon (12:00 - 17:00)": afternoon,
-                "Evening (17:00 - 22:00)": evening,
-                "Night (22:00 - 06:00)": night,
-            },
-            "time_of_day_counts": [morning, afternoon, evening, night],
-            "time_of_day_labels": ["Morning (06:00 - 12:00)", "Afternoon (12:00 - 17:00)", "Evening (17:00 - 22:00)", "Night (22:00 - 06:00)"],
-            "daily_counts": daily_formatted,
-        },
-        "progression_funnel": {
-            "lesson_counts": lesson_funnel,
-            "labels": [f"Mod {i+1}" for i in range(total_mods)],
-            "total_modules": total_mods,
-        },
-        "assessment_insights": assessment_summary,
-        "users": users_list,
-        "recent_activity": recent_activity,
+    summary_dict = {
+        "total_users": total_users,
+        "total_registered_users": total_users,
+        "active_learners": active_learners,
+        "completed_learners": completed_learners,
+        "completed_graduates": completed_learners,
+        "assessment_completed": assessment_completed,
+        "assessment_submissions": assessment_completed,
+        "total_interactions": total_interactions,
+        "completion_rate": comp_rate,
+        "completion_rate_percent": comp_rate,
+        "peak_hour_utc": peak_str,
     }
 
+    status_distribution_formatted = {
+        "labels": ["Graduated", "Lesson", "Quiz", "AI Tutor", "Assessment", "Idle"],
+        "counts": [
+            status_distribution["completed"],
+            status_distribution["lesson"],
+            status_distribution["quiz"],
+            status_distribution["tutor"],
+            status_distribution["assessment"],
+            status_distribution["idle"],
+        ],
+    }
 
-def _format_relative_time(iso_str: str) -> str:
-    """Helper to convert ISO UTC timestamp to human-friendly relative string."""
-    if not iso_str:
-        return "Never"
-    try:
-        clean_iso = iso_str.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(clean_iso)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        diff = _get_utc_now() - dt
-        seconds = int(diff.total_seconds())
-        if seconds < 0:
-            return "Just now"
-        if seconds < 60:
-            return f"{seconds}s ago"
-        minutes = seconds // 60
-        if minutes < 60:
-            return f"{minutes}m ago"
-        hours = minutes // 60
-        if hours < 24:
-            return f"{hours}h ago"
-        days = hours // 24
-        if days == 1:
-            return "Yesterday"
-        if days < 30:
-            return f"{days}d ago"
-        return dt.strftime("%b %d, %Y")
-    except Exception:
-        return iso_str[:16]
+    when_are_they_learning = {
+        "time_of_day_labels": list(time_of_day_slots.keys()),
+        "time_of_day_counts": list(time_of_day_slots.values()),
+        "hourly_labels": [f"{h:02d}:00" for h in range(24)],
+        "hourly_counts": hourly_distribution,
+    }
+
+    progression_funnel = {
+        "total_modules": total_mods,
+        "labels": [f"Mod {i+1}" for i in range(total_mods)],
+        "lesson_counts": lesson_funnel,
+    }
+
+    return {
+        "summary": summary_dict,
+        "backend": _ACTIVE_BACKEND,
+        "is_ephemeral": is_ephemeral,
+        "database_path": _ACTIVE_SQLITE_PATH,
+        "status_distribution": status_distribution_formatted,
+        "status_distribution_raw": status_distribution,
+        "when_are_they_learning": when_are_they_learning,
+        "progression_funnel": progression_funnel,
+        "hourly_distribution": hourly_distribution,
+        "daily_distribution": daily_distribution,
+        "time_of_day_slots": time_of_day_slots,
+        "lesson_funnel": lesson_funnel,
+        "survey_insights": survey_stats,
+        "assessment_insights": survey_stats,
+        "users": users_list,
+        "recent_activity": all_logs[:30],
+    }
