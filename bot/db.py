@@ -36,8 +36,60 @@ SQLITE_PATH = (
 FALLBACK_SQLITE_PATH = os.path.join(SYSTEM_TMP, "portal.db")
 
 DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or os.getenv("SUPABASE_DB_URL")
-UPSTASH_URL = os.getenv("UPSTASH_REDIS_REST_URL") or os.getenv("KV_REST_API_URL")
-UPSTASH_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN") or os.getenv("KV_REST_API_TOKEN")
+
+
+def _get_upstash_credentials() -> Tuple[Optional[str], Optional[str]]:
+    """Resolve Upstash URL and Token across all common Vercel prefix variations."""
+    url = (
+        os.getenv("UPSTASH_REDIS_REST_URL")
+        or os.getenv("KV_REST_API_URL")
+        or os.getenv("STORAGE_REST_API_URL")
+        or os.getenv("STORAGE_URL")
+        or os.getenv("REDIS_REST_API_URL")
+        or os.getenv("UPSTASH_URL")
+    )
+    token = (
+        os.getenv("UPSTASH_REDIS_REST_TOKEN")
+        or os.getenv("KV_REST_API_TOKEN")
+        or os.getenv("STORAGE_REST_API_TOKEN")
+        or os.getenv("STORAGE_TOKEN")
+        or os.getenv("REDIS_REST_API_TOKEN")
+        or os.getenv("UPSTASH_TOKEN")
+    )
+    if url and token:
+        return url, token
+
+    # Auto-detect ANY custom prefix (e.g. [PREFIX]_REST_API_URL / [PREFIX]_REST_API_TOKEN)
+    for k, v in os.environ.items():
+        if k.endswith("_REST_API_URL") and v:
+            prefix = k[:-len("_REST_API_URL")]
+            tok = os.environ.get(f"{prefix}_REST_API_TOKEN")
+            if tok:
+                return v, tok
+    return url, token
+
+
+def _is_upstash_configured() -> bool:
+    url, token = _get_upstash_credentials()
+    return bool(url and token)
+
+
+def _upstash_exec(command: list) -> Any:
+    """Execute a single Redis command via Upstash REST API."""
+    url, token = _get_upstash_credentials()
+    if not (url and token):
+        raise RuntimeError("Upstash is not configured")
+
+    clean_url = url.rstrip("/")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    with httpx.Client(timeout=8.0) as client:
+        resp = client.post(clean_url, headers=headers, json=command)
+        if resp.status_code == 200:
+            return resp.json().get("result")
+        raise RuntimeError(f"Upstash API error {resp.status_code}: {resp.text}")
 
 # JSON File Backups
 USERS_FILE = os.path.join(DATA_DIR, "users.json")
@@ -87,29 +139,7 @@ def _ensure_dirs() -> None:
             pass
 
 
-# ---------------------------------------------------------------------------
-# Upstash Redis REST Client (Pure HTTP via httpx, 100% Serverless Safe)
-# ---------------------------------------------------------------------------
 
-def _is_upstash_configured() -> bool:
-    return bool(UPSTASH_URL and UPSTASH_TOKEN)
-
-
-def _upstash_exec(command: list) -> Any:
-    """Execute a single Redis command via Upstash REST API."""
-    if not _is_upstash_configured():
-        raise RuntimeError("Upstash is not configured")
-
-    url = UPSTASH_URL.rstrip("/")
-    headers = {
-        "Authorization": f"Bearer {UPSTASH_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    with httpx.Client(timeout=8.0) as client:
-        resp = client.post(url, headers=headers, json=command)
-        if resp.status_code == 200:
-            return resp.json().get("result")
-        raise RuntimeError(f"Upstash API error {resp.status_code}: {resp.text}")
 
 
 # ---------------------------------------------------------------------------
