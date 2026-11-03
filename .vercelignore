@@ -1,9 +1,8 @@
-# Ignore large master media and video source files from serverless function bundle
+# Ignore heavy master video and workspace folders from serverless function
 media/
 scripts/
 data/
 tmp/
-*.mp4
 
 # Python artifacts
 __pycache__/
