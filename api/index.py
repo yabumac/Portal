@@ -1,16 +1,8 @@
 """
 api/index.py
-
-FastAPI entry point for the WhatsApp Learning Bot (works locally and deployed
-on Vercel as a Python serverless function).
-
-Routes
-------
-GET  /webhook, /api/webhook   - Meta webhook verification (hub.mode / verify_token / challenge)
-POST /webhook, /api/webhook   - Meta webhook events (all incoming user messages)
-GET  /admin, /dashboard       - Admin & Analytics Dashboard
-GET  /, /health               - Health check
 """
+
+from __future__ import annotations
 
 import logging
 import os

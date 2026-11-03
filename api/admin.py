@@ -1,16 +1,8 @@
 """
 api/admin.py - Modern Enterprise Admin & Analytics Dashboard for EdTech Hub.
-
-Features:
-- Enterprise SaaS UI with EDTECH company logo branding
-- Real-time live data fetching from SQLite/PostgreSQL/Upstash database (ZERO mock/sample data)
-- Interactive Chart.js charts (Status Donut, Time-of-Day Donut, 24-Hour Activity Area, 11-Module Funnel)
-- Real-time client-side polling / auto-sync (30s) & instant AJAX refresh
-- Teacher AI Readiness Survey Breakdown
-- Live Learners Table with instant search, filter tabs, direct WhatsApp links
-- Student Journey Timeline Modal
-- CSV Export for Excel/Sheets
 """
+
+from __future__ import annotations
 
 import csv
 import io

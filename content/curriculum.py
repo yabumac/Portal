@@ -6,8 +6,10 @@ Visual- and video-first learning structure with concise, professional instructio
 Zero childish emojis, clean pedagogy, and direct video clip integration.
 """
 
+from __future__ import annotations
+
 import os
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 DEFAULT_UNIT_ID = "unit_1"
 COURSE_TITLE = "AI for Teaching and Learning (Ethiopian Educators Edition)"
