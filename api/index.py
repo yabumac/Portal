@@ -110,12 +110,16 @@ except Exception as e:
     logger.error(f"Failed to load admin router: {e}", exc_info=True)
 
 
+CANONICAL_DOMAIN = "portal-six-sepia-65.vercel.app"
+
+
 def get_public_media_url(filename_or_path: str) -> str:
     """Build a fully qualified public HTTPS URL for media delivery to WhatsApp."""
     clean = filename_or_path.lstrip("./").lstrip("/")
     if not clean.startswith("media/"):
         clean = f"media/{clean}"
-    host = os.getenv("PUBLIC_URL") or os.getenv("VERCEL_URL") or "portal-six-sepia-65.vercel.app"
+    # Prioritize CANONICAL_DOMAIN or explicit PUBLIC_URL so Meta never requests ephemeral preview domains
+    host = os.getenv("PUBLIC_URL") or CANONICAL_DOMAIN
     if not host.startswith(("http://", "https://")):
         host = f"https://{host}"
     return f"{host.rstrip('/')}/{clean}"
@@ -557,15 +561,12 @@ async def deliver_lesson(wa_id: str, lesson) -> None:
 
     db.log_activity(wa_id, "lesson_viewed", lesson.get("title", ""))
 
-    # 1. Lesson Title
-    await whatsapp.send_text(wa_id, lesson["title"])
-
-    # 2. Chopped video clip first (Primary learning medium)
+    # 1. Chopped video clip first (Primary learning medium)
     video_file = lesson.get("video_file")
     if video_file:
         try:
             v_url = get_public_media_url(video_file)
-            caption = lesson.get("caption") or lesson["title"]
+            caption = f"{lesson['title']}\n\n{lesson.get('caption') or 'Watch the lesson video above:'}"
             await whatsapp.send_media(
                 wa_id,
                 "video",
@@ -574,8 +575,11 @@ async def deliver_lesson(wa_id: str, lesson) -> None:
             )
         except Exception as vid_err:
             logger.warning("Could not send lesson video clip: %s", vid_err)
+    else:
+        # Title text if no video clip
+        await whatsapp.send_text(wa_id, lesson["title"])
 
-    # 3. Visual diagram / slide frame
+    # 2. Visual diagram / slide frame
     image_file = lesson.get("image_file")
     if image_file:
         try:
@@ -584,16 +588,16 @@ async def deliver_lesson(wa_id: str, lesson) -> None:
                 wa_id,
                 "image",
                 img_url,
-                caption="Instructional Visual Guide",
+                caption=f"Visual Guide: {lesson['title']}",
             )
         except Exception as img_err:
             logger.warning("Could not send lesson image: %s", img_err)
 
-    # 4. Concise instructional summary points
+    # 3. Concise instructional summary points
     for paragraph in lesson.get("body", []):
         await whatsapp.send_text(wa_id, paragraph)
 
-    # 5. Next step buttons
+    # 4. Next step buttons
     await whatsapp.send_buttons(
         wa_id,
         "Module complete - choose an option below:",

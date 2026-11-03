@@ -116,10 +116,10 @@ UNITS = {
                     "question": "What does Generative AI actually do when responding to a teacher prompt?",
                     "options": {
                         "A": "It thinks with human consciousness and emotional reasoning.",
-                        "B": "It recognizes patterns in training data to predict useful responses.",
-                        "C": "It searches a fixed, static textbook index.",
+                        "B": "It searches a fixed, static textbook index.",
+                        "C": "It recognizes patterns in training data to predict useful responses.",
                     },
-                    "correct": "B",
+                    "correct": "C",
                     "explanation": (
                         "Correct. Generative AI is a pattern recognition and prediction engine. "
                         "Because it predicts likely answers rather than understanding truth, teacher review is essential."
@@ -187,11 +187,11 @@ UNITS = {
                 "quiz": {
                     "question": "How can a teacher in a school without student computers use AI effectively?",
                     "options": {
-                        "A": "Wait until individual student devices are funded.",
-                        "B": "Prepare materials ahead of time on a personal phone and transcribe them onto the chalkboard.",
+                        "A": "Prepare materials ahead of time on a personal phone and transcribe them onto the chalkboard.",
+                        "B": "Wait until individual student devices are funded for every classroom.",
                         "C": "Only use AI for administrative reports, never for instructional lessons.",
                     },
-                    "correct": "B",
+                    "correct": "A",
                     "explanation": (
                         "Correct. AI supports educator preparation behind the scenes. A teacher with a single phone "
                         "can prepare interactive group activities for an entirely offline class."
@@ -224,10 +224,10 @@ UNITS = {
                     "question": "What is the teacher's most critical responsibility during Step 5 (Review)?",
                     "options": {
                         "A": "Check that the lesson was generated in under thirty seconds.",
-                        "B": "Confirm accuracy, curriculum alignment, and feasibility for your classroom.",
-                        "C": "Ensure all standard textbook exercises are replaced.",
+                        "B": "Ensure all standard textbook exercises are replaced completely.",
+                        "C": "Confirm accuracy, curriculum alignment, and feasibility for your classroom.",
                     },
-                    "correct": "B",
+                    "correct": "C",
                     "explanation": (
                         "Correct. The educator is the instructional designer. Reviewing ensures every lesson "
                         "meets national curriculum standards and fits your students' current capabilities."
@@ -294,11 +294,11 @@ UNITS = {
                 "quiz": {
                     "question": "How does AI support Universal Design for Learning in diverse classrooms?",
                     "options": {
-                        "A": "By creating entirely separate syllabi for every individual student.",
-                        "B": "By rapidly drafting tiered versions of content while maintaining rigorous standards.",
+                        "A": "By rapidly drafting tiered versions of content while maintaining rigorous standards.",
+                        "B": "By creating entirely separate syllabi for every individual student.",
                         "C": "By lowering academic expectations for students with developing language skills.",
                     },
-                    "correct": "B",
+                    "correct": "A",
                     "explanation": (
                         "Correct. AI allows teachers to generate tiered texts and multiple access points quickly, "
                         "ensuring all students work toward the same high-level competency."
@@ -330,10 +330,10 @@ UNITS = {
                     "question": "What is the non-negotiable rule regarding student privacy when using public AI tools?",
                     "options": {
                         "A": "Student names may be entered if grades are left out.",
-                        "B": "Never enter student names, identification numbers, or private details into public AI tools.",
-                        "C": "Personal information is permitted if the tool states it is for education.",
+                        "B": "Personal information is permitted if the tool states it is for education.",
+                        "C": "Never enter student names, identification numbers, or private details into public AI tools.",
                     },
-                    "correct": "B",
+                    "correct": "C",
                     "explanation": (
                         "Correct. Student privacy is paramount. Always use anonymized, generic descriptions "
                         "(e.g., 'Grade 6 student') when prompting AI systems."
