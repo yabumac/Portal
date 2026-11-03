@@ -647,15 +647,15 @@ async def deliver_lesson(wa_id: str, lesson) -> None:
         await asyncio.sleep(0.3)
 
     # 4. Next step buttons
+    # 4. Next step buttons
     await whatsapp.send_buttons(
         wa_id,
         "Module complete - choose an option below:",
         [
             {"id": READY_QUIZ, "title": "Continue to Quiz"},
-            {"id": "watch_video", "title": "Watch Video Again"},
             {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
         ],
-        footer="Tap an option to proceed",
+        footer="Ask a question or continue to the quiz",
     )
 
 
@@ -722,10 +722,10 @@ async def handle_quiz_answer(wa_id: str, answer: str) -> None:
     if result["correct"]:
         await whatsapp.send_text(wa_id, f"Correct! {explanation} Moving on to the next module.")
     else:
+        hint_msg = result.get("hint") or "Review the lesson materials and key principles, then try again."
         await whatsapp.send_text(
             wa_id,
-            f"Not quite - the correct answer was {result['correct_answer']}. "
-            f"{explanation} Try again:",
+            f"Not quite. Here is a helpful hint:\n\n{hint_msg}\n\nPlease try again below:",
         )
         await send_quiz(wa_id)
         return
@@ -744,45 +744,42 @@ async def handle_quiz_answer(wa_id: str, answer: str) -> None:
 # ---------------------------------------------------------------------------
 async def enter_tutor_flow(wa_id: str) -> None:
     cur = state.get_state(wa_id)
-    phase = cur.get("phase")
-
-    lesson_id = None
-    context_label = "the full course"
-    if phase in ("lesson", "quiz"):
-        lesson = state.current_lesson(cur)
-        if lesson:
-            lesson_id = lesson["id"]
-            context_label = lesson["title"]
+    lesson = state.current_lesson(cur)
+    lesson_id = lesson["id"] if lesson else None
+    context_label = lesson["title"] if lesson else "Module 1: AI Basics and The Teacher as Editor"
 
     state.enter_tutor(wa_id, lesson_id=lesson_id)
 
     buttons = [{"id": EXIT_TUTOR, "title": "Exit Tutor"}]
-    if phase in ("lesson", "quiz") and cur.get("unit_id"):
+    if cur.get("unit_id") or cur.get("tutor_resume"):
         buttons.append({"id": TUTOR_RESUME, "title": "Continue Course"})
 
     await whatsapp.send_text(
         wa_id,
-        f"AI Tutor mode - I have the course context ({context_label}). "
-        "Ask me anything about the lesson! Type 'exit' or tap the button to leave.",
+        f"AI Tutor active for: {context_label}\n\n"
+        "Ask any question about this module or classroom AI strategy! "
+        "Type your question below, or tap an option:",
     )
     await whatsapp.send_buttons(
-        wa_id, "What would you like to do?", buttons, footer="Tap an option",
+        wa_id, "What would you like to do?", buttons, footer="Type a question or tap an option",
     )
 
 
 async def tutor_chat(wa_id: str, question: str) -> None:
     cur = state.get_state(wa_id)
-    unit_id = cur.get("unit_id")
-    lesson_id = cur.get("tutor_lesson")
+    unit_id = cur.get("unit_id") or curriculum.DEFAULT_UNIT_ID
+    lesson = state.current_lesson(cur)
+    lesson_id = cur.get("tutor_lesson") or (lesson["id"] if lesson else None)
+    lesson_title = lesson["title"] if lesson else f"Module {(cur.get('lesson_index') or 0) + 1}"
 
     section = curriculum.lesson_as_context(unit_id, lesson_id) if unit_id and lesson_id else ""
 
     db.log_activity(wa_id, "tutor_query", question[:80])
-    answer = await ai_tutor.answer_question(question, section=section)
+    answer = await ai_tutor.answer_question(question, section=section, module_title=lesson_title)
     await whatsapp.send_text(wa_id, answer)
 
     buttons = [{"id": EXIT_TUTOR, "title": "Exit Tutor"}]
-    if unit_id and cur.get("tutor_resume") in ("lesson", "quiz"):
+    if unit_id:
         buttons.append({"id": TUTOR_RESUME, "title": "Continue Course"})
 
     await whatsapp.send_buttons(
@@ -882,8 +879,9 @@ async def handle_assessment_answer(wa_id: str, letter: str) -> None:
 async def handle_ai_fallback(wa_id: str, question: str) -> None:
     cur = state.get_state(wa_id)
     phase = cur.get("phase")
-    unit_id = cur.get("unit_id")
+    unit_id = cur.get("unit_id") or curriculum.DEFAULT_UNIT_ID
     lesson = state.current_lesson(cur) if phase in ("lesson", "quiz") else None
+    module_title = lesson["title"] if lesson else ""
 
     section = ""
     if phase == "lesson" and lesson:
@@ -893,7 +891,7 @@ async def handle_ai_fallback(wa_id: str, question: str) -> None:
 
     logger.info("AI fallback (%s) phase=%s: %s", wa_id, phase, question[:120])
     db.log_activity(wa_id, "free_text_ai", question[:80])
-    answer = await ai_tutor.answer_question(question, section=section)
+    answer = await ai_tutor.answer_question(question, section=section, module_title=module_title)
     await whatsapp.send_text(wa_id, answer)
 
     if phase == "lesson" and lesson:

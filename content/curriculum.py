@@ -124,6 +124,10 @@ UNITS = {
                         "Correct. Generative AI is a pattern recognition and prediction engine. "
                         "Because it predicts likely answers rather than understanding truth, teacher review is essential."
                     ),
+                    "hint": (
+                        "Think about how AI operates under the hood: it mathematically analyzes patterns and calculates "
+                        "probabilities from vast text data, rather than having conscious thoughts or browsing a fixed book index."
+                    ),
                 },
             },
 
@@ -162,6 +166,10 @@ UNITS = {
                         "Correct. Role, Context, Task, Constraints, and Output Format guarantee that "
                         "AI outputs directly match your learners and classroom resources."
                     ),
+                    "hint": (
+                        "Remember the 5 essential questions: Who should AI act as? Who are your learners? "
+                        "What is the assignment? What classroom constraints exist? And how should the response be formatted?"
+                    ),
                 },
             },
 
@@ -195,6 +203,10 @@ UNITS = {
                     "explanation": (
                         "Correct. AI supports educator preparation behind the scenes. A teacher with a single phone "
                         "can prepare interactive group activities for an entirely offline class."
+                    ),
+                    "hint": (
+                        "Think about single-device batch preparation: a teacher can draft exercises on their own device "
+                        "during connectivity hours, then bring them to class using traditional chalkboards and small groups."
                     ),
                 },
             },
@@ -232,6 +244,10 @@ UNITS = {
                         "Correct. The educator is the instructional designer. Reviewing ensures every lesson "
                         "meets national curriculum standards and fits your students' current capabilities."
                     ),
+                    "hint": (
+                        "Recall the 'Teacher as Editor' standard: AI provides a fast first draft, but the educator must check "
+                        "factual truth, national curriculum standards, and whether the timing actually fits their classroom."
+                    ),
                 },
             },
 
@@ -264,6 +280,10 @@ UNITS = {
                     "explanation": (
                         "Correct. AI helps formulate diagnostic questions and suggests pedagogical responses "
                         "when students struggle, while the teacher maintains full decision-making control."
+                    ),
+                    "hint": (
+                        "Remember that formative assessment diagnoses learning gaps in real time: AI is an assistant that drafts "
+                        "exit questions and proposes re-teaching interventions, while the teacher decides the next teaching move."
                     ),
                 },
             },
@@ -303,6 +323,10 @@ UNITS = {
                         "Correct. AI allows teachers to generate tiered texts and multiple access points quickly, "
                         "ensuring all students work toward the same high-level competency."
                     ),
+                    "hint": (
+                        "UDL is about multiple means of access, not lowering expectations: AI quickly provides tiered text "
+                        "versions (simplified vocab, visual metaphors, bilingual glossaries) so all students reach the same goal."
+                    ),
                 },
             },
 
@@ -337,6 +361,10 @@ UNITS = {
                     "explanation": (
                         "Correct. Student privacy is paramount. Always use anonymized, generic descriptions "
                         "(e.g., 'Grade 6 student') when prompting AI systems."
+                    ),
+                    "hint": (
+                        "Student data protection is absolute: personally identifiable information such as student names, "
+                        "registration numbers, or family details must never be uploaded or shared with public AI models."
                     ),
                 },
             },
@@ -411,6 +439,7 @@ def check_answer(unit_id: str, lesson_id: Any, selected: str) -> dict:
         "correct": is_correct,
         "correct_answer": correct_answer,
         "explanation": quiz.get("explanation", ""),
+        "hint": quiz.get("hint", ""),
     }
 
 

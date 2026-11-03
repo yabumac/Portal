@@ -1,24 +1,21 @@
 """
 bot/ai_tutor.py
 
-AI Tutor backed by the Gemini API (google-generativeai SDK or direct REST fallback).
-
-Simple RAG approach
--------------------
-The whole curriculum is flattened into a plain-text context block (see
-build_rag_context). On top of that, the caller can pass a `section` string -
-the CURRENT lesson or quiz the user is looking at - which is injected as the
-most-relevant context. That way the tutor always knows exactly where the
-student is in the course.
-
-Config (env vars):
-    GEMINI_API_KEY - required
-    GEMINI_MODEL   - optional, default "gemini-2.5-flash"
+AI Pedagogical Tutor backed by the Google Gemini API.
+Features:
+1. Dynamic model resolution and multi-model fallback (gemini-1.5-flash, gemini-2.0-flash, gemini-1.5-pro).
+2. Module-Aware Context: Recognizes whatever module the teacher is on and elaborates on it.
+3. Systematic Pedagogical Guardrail: Strictly enforces the course domain without requiring an external vector DB.
+4. Resilient REST and SDK invocation with zero silent crashes.
 """
+
+from __future__ import annotations
 
 import asyncio
 import logging
 import os
+from typing import Optional
+
 import httpx
 
 try:
@@ -30,87 +27,113 @@ from content import curriculum
 
 logger = logging.getLogger("whatsapp_bot")
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+DEFAULT_MODEL = "gemini-1.5-flash"
+FALLBACK_MODELS = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
 
-_MAX_ANSWER_WORDS = 150
-_MAX_OUTPUT_TOKENS = 600
+_MAX_ANSWER_WORDS = 130
+_MAX_OUTPUT_TOKENS = 500
+
+
+def _get_gemini_api_key() -> Optional[str]:
+    """Retrieve Gemini API key from environment."""
+    return os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
 
 def build_rag_context() -> str:
-    """Flatten all course content into a compact text context for the model."""
+    """Flatten all course content into a compact text reference for the model."""
     lines = []
     for unit in curriculum.UNITS.values():
         lines.append(f"UNIT: {unit['id']} - {unit['title']}")
         lines.append(f"Summary: {unit['summary']}")
-        for lesson in unit["lessons"]:
-            for paragraph in lesson["body"]:
+        for lesson in unit.get("lessons", []):
+            lines.append(f"MODULE: {lesson.get('title')}")
+            for paragraph in lesson.get("body", []):
                 lines.append(paragraph)
         lines.append("")
     return "\n".join(lines).strip()
 
 
-SYSTEM_PROMPT_TEMPLATE = f"""
-You are the expert AI Tutor for "AI for Teaching & Learning (Ethiopian Educators Edition)", an EdTech Hub teacher-training course delivered over WhatsApp.
+def _build_system_instruction(section: str = "", module_title: str = "") -> str:
+    current_module_label = module_title.strip() if module_title else "AI for Teaching and Learning"
 
-Your mission is to help Ethiopian educators apply Artificial Intelligence practically, creatively, and responsibly in real classroom settings (large classes 50+, low connectivity, limited devices, multilingual learners).
+    return f"""You are the expert AI Pedagogical Tutor for Ethiopian educators taking the course: "AI for Teaching and Learning (Ethiopian Educators Edition)" by EdTech Hub.
 
-Core Pedagogical Knowledge:
-1. Role of AI: AI is a thoughtful assistant and drafting partner; the teacher is the Lead Designer and Editor who makes all final pedagogical, grading, and ethical decisions.
-2. 5-Part Teacher Prompt Formula: Role + Context & Audience + Task + Constraints + Output Format.
-3. Ethiopian Classroom Strategies: Batch preparation when internet is available, offline classroom delivery using chalkboards and collaborative small groups, simplified English and bilingual glossaries.
-4. 5-Step Lesson Planning Workflow: Goal -> Plan -> Material -> Adapt -> Review.
-5. Formative Assessment: Generate -> Review -> From Evidence to Action (identifying student misconceptions to determine the Next Teaching Move). AI Informs, Teacher Decides.
-6. Universal Design for Learning (UDL): Multiple means of representation, engagement, and expression through tiered prompts (simplified, grade-level, extension).
-7. Ethical Safeguards: Student privacy (never enter personal student data), verifying hallucinations against textbooks, checking for cultural bias, academic integrity, and digital equity.
+CURRENT ACTIVE MODULE / TOPIC:
+{current_module_label}
 
-Tutor Guidelines:
-1. Answer using the COURSE CONTEXT below whenever possible.
-2. If a CURRENT SECTION is provided below, weight it most heavily as the teacher is studying that module right now.
-3. Be concise, educational, and practical: at most {_MAX_ANSWER_WORDS} words, in clear plain text suitable for WhatsApp.
-4. Keep the tone warm, encouraging, and deeply respectful of teachers' professional dedication.
-5. If asked for a prompt example, always structure it using the 5-Part Formula!
+CURRENT MODULE REFERENCE MATERIAL:
+{section if section else 'General Course Curriculum'}
 
-COURSE CONTEXT:
-{{course_context}}
+FULL COURSE SYLLABUS REFERENCE:
+{build_rag_context()}
+
+STRICT SYSTEMATIC GUARDRAILS & PEDAGOGICAL RULES:
+1. IN-SCOPE DOMAIN:
+   You strictly answer questions about:
+   - The teacher's current module ({current_module_label})
+   - Educational AI tools and prompt engineering (5-Part Prompt Formula)
+   - Ethiopian classroom realities (50+ students, low connectivity, shared devices, chalkboard transcription)
+   - 5-step lesson planning, formative assessment (Evidence to Action), Universal Design for Learning (UDL), and ethical safeguards / student privacy.
+
+2. MODULE ELABORATION:
+   When answering questions related to teaching or this course, elaborate clearly and practically. Tie your answer directly to {current_module_label} and offer realistic, low-resource Ethiopian classroom examples.
+
+3. OUT-OF-SCOPE REFUSAL (GUARDRAIL):
+   If the user asks questions completely unrelated to teaching, education, or AI pedagogy (e.g., general trivia, entertainment, celebrity gossip, software development unrelated to education, political debates, sports news, cryptocurrency, or off-topic homework solving):
+   DO NOT answer the off-topic query. Politely decline and guide them back with this exact educational guardrail:
+   "I am your AI Tutor dedicated specifically to the 'AI for Teaching and Learning' course. I can only assist with pedagogical strategies and your current module ({current_module_label}). Feel free to ask any question about this lesson or how to use AI in your classroom!"
+
+4. TONE & FORMATTING:
+   - Warm, respectful, encouraging, and professional.
+   - Keep answers concise (under {_MAX_ANSWER_WORDS} words) in clear plain text suitable for WhatsApp.
+   - Do NOT use aggressive or childish emojis.
 """
 
 
-def _build_system_instruction(section: str) -> str:
-    instruction = SYSTEM_PROMPT_TEMPLATE.format(
-        course_context=build_rag_context()
-    )
-    if section:
-        instruction += (
-            "\n\nCURRENT SECTION (user is looking at this right now, most relevant):\n"
-            f"{section}\n"
-            + "-" * 40
-        )
-    return instruction
+def _answer_sync(question: str, section: str, module_title: str) -> str:
+    """Synchronous Gemini SDK call with model fallback."""
+    api_key = _get_gemini_api_key()
+    if not api_key:
+        return "The AI tutor is not configured yet. Ask your administrator to set GEMINI_API_KEY."
 
-
-def _answer_sync(question: str, section: str) -> str:
-    """Blocking Gemini call using google-generativeai SDK."""
     if not genai:
         raise RuntimeError("genai library not available")
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel(
-        GEMINI_MODEL,
-        system_instruction=_build_system_instruction(section),
-        generation_config=genai.types.GenerationConfig(
-            temperature=0.4,
-            max_output_tokens=_MAX_OUTPUT_TOKENS,
-        ),
-    )
-    response = model.generate_content(question)
-    text = (response.text or "").strip()
-    return text if text else "I could not find an answer to that in the course material."
+
+    genai.configure(api_key=api_key)
+    system_inst = _build_system_instruction(section, module_title)
+
+    preferred_model = os.getenv("GEMINI_MODEL") or DEFAULT_MODEL
+    models_to_try = [preferred_model] + [m for m in FALLBACK_MODELS if m != preferred_model]
+
+    for model_name in models_to_try:
+        if model_name == "gemini-2.5-flash":
+            model_name = DEFAULT_MODEL
+        try:
+            model = genai.GenerativeModel(
+                model_name,
+                system_instruction=system_inst,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.3,
+                    max_output_tokens=_MAX_OUTPUT_TOKENS,
+                ),
+            )
+            response = model.generate_content(question)
+            text = (response.text or "").strip()
+            if text:
+                return text
+        except Exception as err:
+            logger.warning("Gemini SDK model %s failed: %s", model_name, err)
+
+    raise RuntimeError("All Gemini SDK models failed")
 
 
-async def _answer_rest(question: str, section: str) -> str:
-    """Direct REST call to Gemini API using httpx (zero SDK dependency)."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-    system_inst = _build_system_instruction(section)
+async def _answer_rest(question: str, section: str, module_title: str) -> str:
+    """Direct REST call to Gemini API using httpx (zero SDK dependency, robust fallback)."""
+    api_key = _get_gemini_api_key()
+    if not api_key:
+        return "The AI tutor is not configured yet. Ask your administrator to set GEMINI_API_KEY."
+
+    system_inst = _build_system_instruction(section, module_title)
     payload = {
         "contents": [
             {
@@ -121,46 +144,57 @@ async def _answer_rest(question: str, section: str) -> str:
             "parts": [{"text": system_inst}]
         },
         "generationConfig": {
-            "temperature": 0.4,
+            "temperature": 0.3,
             "maxOutputTokens": _MAX_OUTPUT_TOKENS,
         }
     }
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(url, json=payload)
-    if resp.status_code == 200:
-        data = resp.json()
-        try:
-            candidates = data.get("candidates", [])
-            if candidates:
-                parts = candidates[0].get("content", {}).get("parts", [])
-                if parts:
-                    return parts[0].get("text", "").strip()
-        except Exception:
-            pass
-        return "I could not find an answer to that in the course material."
-    else:
-        logger.error(f"Gemini REST error {resp.status_code}: {resp.text}")
-        return "Sorry, the AI tutor hit a snag. Please try again in a moment."
+
+    preferred_model = os.getenv("GEMINI_MODEL") or DEFAULT_MODEL
+    models_to_try = [preferred_model] + [m for m in FALLBACK_MODELS if m != preferred_model]
+
+    async with httpx.AsyncClient(timeout=25.0) as client:
+        for model_name in models_to_try:
+            if model_name == "gemini-2.5-flash":
+                model_name = DEFAULT_MODEL
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+            try:
+                resp = await client.post(url, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        if parts:
+                            text = parts[0].get("text", "").strip()
+                            if text:
+                                return text
+                else:
+                    logger.warning("Gemini REST model %s returned HTTP %s: %s", model_name, resp.status_code, resp.text[:200])
+            except Exception as e:
+                logger.warning("Gemini REST model %s request exception: %s", model_name, e)
+
+    return "I am your AI Tutor. I couldn't reach the service right now, but feel free to ask your question again in a moment!"
 
 
-async def answer_question(question: str, section: str = "") -> str:
+async def answer_question(question: str, section: str = "", module_title: str = "") -> str:
     """
-    Answer a user's free-text question, with the full course context plus the
-    optional `section` string (current lesson / quiz block) injected.
-    Never raises: returns a friendly fallback message on any failure.
+    Answer a user's free-text question with module awareness and systematic guardrails.
+    Never crashes or exposes raw stack traces.
     """
-    if not GEMINI_API_KEY:
+    api_key = _get_gemini_api_key()
+    if not api_key:
         logger.warning("GEMINI_API_KEY is not set")
-        return "The AI tutor is not configured yet. Ask your administrator to set GEMINI_API_KEY."
+        return "The AI tutor is not configured yet. Ask your administrator to set GEMINI_API_KEY in Vercel."
 
+    # Try SDK first if available, then fallback to REST
     try:
         if genai is not None:
-            return await asyncio.to_thread(_answer_sync, question, section)
-        return await _answer_rest(question, section)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Gemini call failed: %s", exc, exc_info=True)
-        # Try REST if SDK failed
-        try:
-            return await _answer_rest(question, section)
-        except Exception:
-            return "Sorry, the AI tutor hit a snag. Please try again in a moment."
+            return await asyncio.to_thread(_answer_sync, question, section, module_title)
+    except Exception as sdk_err:
+        logger.warning("Gemini SDK attempt failed: %s. Falling back to direct REST.", sdk_err)
+
+    try:
+        return await _answer_rest(question, section, module_title)
+    except Exception as rest_err:
+        logger.error("Gemini REST attempt also failed: %s", rest_err, exc_info=True)
+        return "Sorry, the AI tutor hit a momentary snag. Please try asking your question again."
