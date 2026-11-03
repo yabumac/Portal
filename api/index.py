@@ -14,22 +14,44 @@ GET  /, /health               - Health check
 
 import logging
 import os
+import traceback
 
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
-from bot import ai_tutor, db, state, whatsapp
-from content import curriculum
+app = FastAPI(title="EdTech Hub Learning Bot")
 
 # --- Logging (visible in Vercel Logs) ----------------------------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("whatsapp_bot")
 
-# --- Initialize DB on startup ---
+_STARTUP_ERROR = None
 try:
-    db.init_db()
+    from bot import ai_tutor, db, state, whatsapp
+    from content import curriculum
+    try:
+        db.init_db()
+    except Exception as e:
+        logger.warning(f"DB init warning: {e}")
 except Exception as e:
-    logger.warning(f"DB init warning: {e}")
+    _STARTUP_ERROR = f"Startup error: {e}\n{traceback.format_exc()}"
+    logger.error("Startup error: %s", _STARTUP_ERROR)
+
+@app.middleware("http")
+async def startup_error_catcher(request: Request, call_next):
+    if _STARTUP_ERROR:
+        return JSONResponse(
+            status_code=500,
+            content={"status": "startup_failed", "error": _STARTUP_ERROR}
+        )
+    try:
+        return await call_next(request)
+    except Exception as req_err:
+        logger.error("Unhandled request exception: %s", req_err, exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"status": "request_failed", "error": str(req_err), "trace": traceback.format_exc()}
+        )
 
 # --- Config ------------------------------------------------------------------
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "local-test")
@@ -49,8 +71,6 @@ ASSESS_PREFIX = "assess:"
 GREETINGS = {"hi", "hello", "hey", "start", "help"}
 MODE_ABORT = {"exit", "quit", "back"}
 LESSON_GO = {"ready", "continue", "next", "quiz", "go", "resume"}
-
-app = FastAPI(title="EdTech Hub Learning Bot")
 
 # --- Admin dashboard routes ---------------------------------------------------
 try:
