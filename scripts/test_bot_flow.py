@@ -2,11 +2,6 @@ print("1: Starting script", flush=True)
 import asyncio
 import os
 import sys
-import builtins
-
-orig_print = builtins.print
-builtins.print = lambda *a, **k: orig_print(*a, **{**k, 'flush': True})
-
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
@@ -21,16 +16,19 @@ from content import curriculum
 print("5: Defining run_tests", flush=True)
 
 async def run_tests():
-    print("==================================================")
-    print("Testing WhatsApp Learning Bot Progression & Persistence")
-    print("==================================================")
+    print("==================================================", flush=True)
+    print("Testing WhatsApp Learning Bot Progression & Persistence", flush=True)
+    print("==================================================", flush=True)
 
     test_wa_id = "251911998877"
+    print("Step 0: deleting test user", flush=True)
     db.delete_user(test_wa_id)
+    print("Step 0 done", flush=True)
 
     # 1. Fresh user sends "hi"
-    print("\n--- Step 1: User says 'hi' (Fresh) ---")
+    print("\n--- Step 1: User says 'hi' (Fresh) ---", flush=True)
     await index.handle_text(test_wa_id, "hi")
+    print("Step 1 handle_text returned", flush=True)
     st1 = state.get_state(test_wa_id)
     print(f"User state after 'hi': phase={st1.get('phase')}, lesson_index={st1.get('lesson_index')}")
     assert st1 is not None, "User state should exist in DB"
@@ -59,9 +57,9 @@ async def run_tests():
     print(f"User state after READY_QUIZ: phase={st4.get('phase')}")
     assert st4.get("phase") == "quiz", f"Expected phase 'quiz', got {st4.get('phase')}"
 
-    # 5. User submits correct answer 'B'
-    print("\n--- Step 5: User answers quiz option 'B' ---")
-    await index.handle_button_click(test_wa_id, f"{index.ANSWER_PREFIX}B")
+    # 5. User submits correct answer 'C' (Diversified answer)
+    print("\n--- Step 5: User answers quiz option 'C' ---")
+    await index.handle_button_click(test_wa_id, f"{index.ANSWER_PREFIX}C")
     st5 = state.get_state(test_wa_id)
     print(f"User state after quiz answer: phase={st5.get('phase')}, lesson_index={st5.get('lesson_index')}")
     assert st5.get("lesson_index") == 1, f"Expected advancement to lesson_index 1, got {st5.get('lesson_index')}"
@@ -87,4 +85,5 @@ async def run_tests():
     print("\n[ALL TESTS PASSED] Flow, video-first structure, and persistence validated!")
 
 if __name__ == "__main__":
+    print("6: Calling asyncio.run", flush=True)
     asyncio.run(run_tests())

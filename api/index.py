@@ -4,6 +4,7 @@ api/index.py
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import traceback
@@ -504,6 +505,7 @@ async def send_menu(wa_id: str, fresh: bool = True) -> None:
                     logo_url,
                     caption="EdTech Hub - AI for Ethiopian Educators",
                 )
+                await asyncio.sleep(0.5)
             except Exception as logo_err:
                 logger.warning("Could not send welcome logo (non-blocking): %s", logo_err)
 
@@ -516,10 +518,12 @@ async def send_menu(wa_id: str, fresh: bool = True) -> None:
                     video_url,
                     caption="Course Overview: 4 Learning Objectives",
                 )
+                await asyncio.sleep(0.6)
             except Exception as media_err:
                 logger.warning("Could not send intro video (non-blocking): %s", media_err)
 
             await whatsapp.send_text(wa_id, curriculum.BOT_INTRO)
+            await asyncio.sleep(0.3)
     else:
         await whatsapp.send_text(wa_id, "Main menu:")
 
@@ -573,11 +577,13 @@ async def deliver_lesson(wa_id: str, lesson) -> None:
                 v_url,
                 caption=caption,
             )
+            await asyncio.sleep(0.6)
         except Exception as vid_err:
             logger.warning("Could not send lesson video clip: %s", vid_err)
     else:
         # Title text if no video clip
         await whatsapp.send_text(wa_id, lesson["title"])
+        await asyncio.sleep(0.4)
 
     # 2. Visual diagram / slide frame
     image_file = lesson.get("image_file")
@@ -590,12 +596,14 @@ async def deliver_lesson(wa_id: str, lesson) -> None:
                 img_url,
                 caption=f"Visual Guide: {lesson['title']}",
             )
+            await asyncio.sleep(0.5)
         except Exception as img_err:
             logger.warning("Could not send lesson image: %s", img_err)
 
     # 3. Concise instructional summary points
     for paragraph in lesson.get("body", []):
         await whatsapp.send_text(wa_id, paragraph)
+        await asyncio.sleep(0.3)
 
     # 4. Next step buttons
     await whatsapp.send_buttons(

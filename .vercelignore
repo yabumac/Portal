@@ -1,5 +1,13 @@
-# Ignore heavy master video and workspace folders from serverless function
-media/
+# Ignore heavy master video (75MB) and root media folder from serverless bundle
+/media/
+media/AI for Teaching and Learning_1080p_caption.mp4
+public/media/AI for Teaching and Learning_1080p_caption.mp4
+
+# Explicitly deploy public assets to Vercel CDN
+!public/
+!public/**
+
+# Workspace folders
 scripts/
 data/
 tmp/

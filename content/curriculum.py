@@ -274,9 +274,9 @@ UNITS = {
             {
                 "id": "lesson_6",
                 "title": "Module 6: Differentiated and Inclusive Learning (UDL)",
-                "video_file": None,
+                "video_file": "vid_06_udl.mp4",
                 "image_file": "img_07_collaboration.png",
-                "caption": "Infographic: Universal Design for Learning in Collaborative Classrooms",
+                "caption": "Video: Differentiated and Inclusive Learning (UDL) (2:41-2:58)",
                 "body": [
                     "Module 6: Differentiated and Inclusive Learning\n\n"
                     "Universal Design for Learning (UDL) ensures every student can access challenging content, "
