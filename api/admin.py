@@ -297,6 +297,29 @@ async def delete_single_user(phone_number: str, request: Request):
     return {"status": "ok", "message": f"User {phone_number} deleted successfully"}
 
 
+@router.post("/api/test-whatsapp")
+async def test_whatsapp_endpoint(request: Request):
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        body = await request.json()
+        phone = body.get("phone", "").strip()
+        from bot import whatsapp
+        res = await whatsapp.send_test_message(phone)
+        return JSONResponse(res)
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e), "hint": "Check phone number format and server logs."})
+
+
+@router.get("/api/whatsapp-status")
+async def get_whatsapp_status(request: Request):
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    from bot import whatsapp
+    status = whatsapp.get_connection_status()
+    return JSONResponse(status)
+
+
 @router.get("/export/csv")
 async def export_users_csv(request: Request):
     if not is_authenticated(request):
@@ -342,6 +365,21 @@ async def admin_dashboard(request: Request):
     recent_activity = data["recent_activity"]
     backend = data["backend"]
     db_path = data["database_path"].split(os.sep)[-1]
+
+    from bot import whatsapp
+    meta_status = whatsapp.get_connection_status()
+    token_ok = meta_status["token_configured"]
+    phone_ok = meta_status["phone_configured"]
+    token_badge = "badge-green" if token_ok else "badge-orange"
+    token_text = meta_status["token_masked"] if token_ok else "MISSING in Vercel"
+    phone_badge = "badge-green" if phone_ok else "badge-orange"
+    phone_text = meta_status["phone_masked"] if phone_ok else "MISSING in Vercel"
+    verify_token_text = meta_status["verify_token"]
+
+    base_url = str(request.base_url).rstrip("/")
+    if "vercel.app" in base_url and base_url.startswith("http://"):
+        base_url = "https://" + base_url[len("http://"):]
+    webhook_callback_url = f"{base_url}/webhook"
 
     # Serialize analytics data to JSON string for Chart.js
     analytics_json = json.dumps(data)
@@ -1116,6 +1154,45 @@ async def admin_dashboard(request: Request):
     </header>
 
     <div class="dashboard-container">
+        <!-- Meta WhatsApp Cloud API Diagnostic & Tester Card -->
+        <div style="background:#ffffff;border:1px solid var(--border);border-radius:16px;padding:20px 24px;margin-bottom:28px;box-shadow:var(--shadow-sm);">
+            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
+                <div style="display:flex;align-items:center;gap:12px;">
+                    <div style="width:42px;height:42px;border-radius:10px;background:#25D366;color:#ffffff;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:bold;box-shadow:0 4px 10px rgba(37,211,102,0.3);">
+                        &#x260E;
+                    </div>
+                    <div>
+                        <h3 style="font-size:16px;font-weight:700;color:#0f172a;margin:0;">Meta WhatsApp Cloud API Live Health</h3>
+                        <p style="font-size:12px;color:#64748b;margin:2px 0 0 0;">Webhook status, environment credentials & live message tester</p>
+                    </div>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                    <span class="badge {token_badge}"><span class="badge-dot"></span> WHATSAPP_TOKEN: {token_text}</span>
+                    <span class="badge {phone_badge}"><span class="badge-dot"></span> PHONE_NUMBER_ID: {phone_text}</span>
+                    <span class="badge badge-blue"><span class="badge-dot"></span> VERIFY_TOKEN: {verify_token_text}</span>
+                </div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1.3fr 1.2fr;gap:20px;background:#f8fafc;padding:16px;border-radius:12px;border:1px solid #f1f5f9;">
+                <div>
+                    <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;letter-spacing:0.5px;margin-bottom:6px;">Meta Developer Portal Webhook Callback URL</div>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <input id="webhookUrlInput" type="text" readonly value="{webhook_callback_url}" style="flex:1;background:#ffffff;border:1px solid #cbd5e1;padding:8px 12px;border-radius:8px;font-size:12px;font-family:'JetBrains Mono', monospace;color:#0f172a;">
+                        <button onclick="copyWebhookUrl()" class="btn" style="padding:8px 14px;font-size:12px;font-weight:600;white-space:nowrap;">Copy URL</button>
+                    </div>
+                </div>
+
+                <div>
+                    <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;letter-spacing:0.5px;margin-bottom:6px;">Send WhatsApp Test Ping</div>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <input id="testPhoneInput" type="text" placeholder="Your phone e.g. 15551234567" style="flex:1;background:#ffffff;border:1px solid #cbd5e1;padding:8px 12px;border-radius:8px;font-size:12px;color:#0f172a;">
+                        <button id="sendTestBtn" onclick="sendTestWhatsApp()" class="btn btn-primary" style="padding:8px 14px;font-size:12px;font-weight:600;white-space:nowrap;">Test Ping</button>
+                    </div>
+                </div>
+            </div>
+            <div id="testPingResult" style="display:none;margin-top:12px;padding:12px 16px;border-radius:10px;font-size:13px;line-height:1.4;"></div>
+        </div>
+
         <!-- Hero KPI Metrics -->
         <div class="stats-grid">
             <div class="stat-card">
@@ -1613,6 +1690,60 @@ async def admin_dashboard(request: Request):
                 console.error('Refresh error:', err);
             }} finally {{
                 if (icon) icon.classList.remove('spinning');
+            }}
+        }}
+
+        function copyWebhookUrl() {{
+            const input = document.getElementById('webhookUrlInput');
+            if (input) {{
+                input.select();
+                navigator.clipboard.writeText(input.value);
+                alert('Webhook URL copied to clipboard!\n\nPaste this into Meta Developer Portal > WhatsApp > Configuration > Callback URL');
+            }}
+        }}
+
+        async function sendTestWhatsApp() {{
+            const phoneInput = document.getElementById('testPhoneInput');
+            const resDiv = document.getElementById('testPingResult');
+            const btn = document.getElementById('sendTestBtn');
+            const phone = phoneInput ? phoneInput.value.trim() : '';
+
+            if (!phone) {{
+                alert('Please enter your WhatsApp phone number with country code (e.g. 15551234567)');
+                return;
+            }}
+
+            btn.disabled = true;
+            btn.innerText = 'Sending...';
+            resDiv.style.display = 'block';
+            resDiv.style.background = '#eff6ff';
+            resDiv.style.color = '#1e40af';
+            resDiv.innerHTML = 'Connecting to Meta WhatsApp Cloud API...';
+
+            try {{
+                const resp = await fetch('/admin/api/test-whatsapp', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{phone: phone}})
+                }});
+                const data = await resp.json();
+                if (data.success) {{
+                    resDiv.style.background = '#dcfce7';
+                    resDiv.style.color = '#166534';
+                    resDiv.innerHTML = '&#x2705; <b>Success!</b> Test ping sent to WhatsApp (' + phone + '). Check your phone!';
+                }} else {{
+                    resDiv.style.background = '#fee2e2';
+                    resDiv.style.color = '#991b1b';
+                    resDiv.innerHTML = '&#x26A0;&#xFE0F; <b>Meta API Error:</b> ' + (data.error || 'Failed to send') +
+                        (data.hint ? '<br><span style="font-size:12px;margin-top:6px;display:inline-block;color:#7f1d1d;"><b>Action required:</b> ' + data.hint + '</span>' : '');
+                }}
+            }} catch (err) {{
+                resDiv.style.background = '#fee2e2';
+                resDiv.style.color = '#991b1b';
+                resDiv.innerHTML = '<b>Network Error:</b> ' + err.message;
+            }} finally {{
+                btn.disabled = false;
+                btn.innerText = 'Test Ping';
             }}
         }}
 

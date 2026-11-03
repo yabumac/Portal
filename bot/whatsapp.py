@@ -15,8 +15,8 @@ Config (env vars):
 """
 
 import json
-import os
 import logging
+import os
 from typing import Optional
 
 import httpx
@@ -37,13 +37,24 @@ _MAX_SECTION_TITLE = 60
 _MAX_LIST_TEXT = 20
 
 
+def _get_token() -> Optional[str]:
+    return os.getenv("WHATSAPP_TOKEN") or WHATSAPP_TOKEN
+
+
+def _get_phone_id() -> Optional[str]:
+    return os.getenv("PHONE_NUMBER_ID") or PHONE_NUMBER_ID
+
+
 def _messages_url() -> str:
-    return f"https://graph.facebook.com/{GRAPH_API_VERSION}/{PHONE_NUMBER_ID}/messages"
+    version = os.getenv("GRAPH_API_VERSION", GRAPH_API_VERSION)
+    phone_id = _get_phone_id()
+    return f"https://graph.facebook.com/{version}/{phone_id}/messages"
 
 
 def _headers() -> dict:
+    token = _get_token()
     return {
-        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
 
@@ -66,21 +77,48 @@ class _MockResponse:
 
 async def _post(payload: dict) -> httpx.Response:
     """POST a payload to the Messages API and log the outcome."""
-    if MOCK_SEND:
+    is_mock = os.getenv("MOCK_SEND", "").strip().lower() in ("1", "true", "yes") or MOCK_SEND
+    if is_mock:
         logger.info("[MOCK_SEND] would POST to Meta:\n%s", json.dumps(payload, indent=2, ensure_ascii=False))
         return _MockResponse()
 
-    if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID:
-        logger.error("Missing WHATSAPP_TOKEN or PHONE_NUMBER_ID - cannot send")
-        raise RuntimeError("WhatsApp credentials not configured")
+    token = _get_token()
+    phone_id = _get_phone_id()
+
+    if not token or not phone_id:
+        err_msg = (
+            "WhatsApp credentials not configured! "
+            f"WHATSAPP_TOKEN={'configured' if token else 'MISSING'}, "
+            f"PHONE_NUMBER_ID={'configured' if phone_id else 'MISSING'}"
+        )
+        logger.error(err_msg)
+        try:
+            from bot import db
+            db.log_activity("system", "whatsapp_missing_credentials", err_msg)
+        except Exception:
+            pass
+        raise RuntimeError(err_msg)
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(_messages_url(), headers=_headers(), json=payload)
 
+    to_user = payload.get("to", "unknown")
     if response.status_code >= 400:
         logger.error("Meta send failed: %s - %s", response.status_code, response.text)
+        try:
+            from bot import db
+            db.log_activity(to_user, "meta_send_error", f"HTTP {response.status_code}: {response.text}")
+        except Exception:
+            pass
     else:
         logger.info("Meta send ok (%s): %s", response.status_code, response.text[:500])
+        try:
+            from bot import db
+            msg_type = payload.get("type", "message")
+            db.log_activity(to_user, "meta_send_ok", f"Type: {msg_type}")
+        except Exception:
+            pass
+
     return response
 
 
@@ -207,15 +245,18 @@ async def send_media(
     url: str,
     caption: Optional[str] = None,
     filename: Optional[str] = None,
-) -> httpx.Response:
+) -> Optional[httpx.Response]:
     """
     Send a media message by link.
-
-    media_type: one of "image", "video", "audio", "document".
-    filename is only applied to documents; captions are dropped for audio.
+    Guarantees non-crashing behavior if URL is local or invalid.
     """
     if media_type not in {"image", "video", "audio", "document"}:
         raise ValueError(f"Unsupported media type: {media_type!r}")
+
+    # Meta Graph API strictly requires a valid public http(s) URL
+    if not url or not (url.startswith("http://") or url.startswith("https://")):
+        logger.warning("send_media skipped: '%s' is not an absolute HTTP/HTTPS URL", url)
+        return None
 
     media_payload = {"link": url}
     if media_type == "document" and filename:
@@ -233,11 +274,121 @@ async def send_media(
     return await _post(payload)
 
 
-async def mark_as_read(message_id: str) -> httpx.Response:
+async def mark_as_read(message_id: str) -> Optional[httpx.Response]:
     """Mark an incoming message as read (good practice for webhooks)."""
+    if not message_id:
+        return None
     payload = {
         "messaging_product": "whatsapp",
         "status": "read",
         "message_id": message_id,
     }
-    return await _post(payload)
+    try:
+        return await _post(payload)
+    except Exception as exc:
+        logger.warning("mark_as_read non-fatal failure: %s", exc)
+        return None
+
+
+def get_connection_status() -> dict:
+    """Check configuration status of Meta WhatsApp credentials."""
+    token = _get_token() or ""
+    phone_id = _get_phone_id() or ""
+    verify_token = os.getenv("VERIFY_TOKEN", "local-test")
+
+    masked_token = (
+        f"{token[:6]}...{token[-4:]}"
+        if len(token) > 10
+        else ("Configured" if token else "MISSING")
+    )
+    masked_phone = (
+        f"...{phone_id[-4:]}"
+        if len(phone_id) > 4
+        else (phone_id or "MISSING")
+    )
+
+    return {
+        "token_configured": bool(token),
+        "phone_configured": bool(phone_id),
+        "token_masked": masked_token,
+        "phone_id": phone_id,
+        "phone_masked": masked_phone,
+        "verify_token": verify_token,
+        "ready": bool(token and phone_id),
+    }
+
+
+async def send_test_message(to_phone: str) -> dict:
+    """Send a live test message to verify Meta API connection and diagnostics."""
+    token = _get_token()
+    phone_id = _get_phone_id()
+
+    if not token or not phone_id:
+        return {
+            "success": False,
+            "status_code": 0,
+            "error": "Missing WhatsApp credentials in environment",
+            "hint": "Set WHATSAPP_TOKEN and PHONE_NUMBER_ID in Vercel Project Settings > Environment Variables.",
+        }
+
+    cleaned_phone = "".join(ch for ch in str(to_phone) if ch.isdigit())
+    if not cleaned_phone:
+        return {
+            "success": False,
+            "status_code": 0,
+            "error": "Invalid phone number",
+            "hint": "Enter your phone number including country code without '+', e.g. 15551234567.",
+        }
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": cleaned_phone,
+        "type": "text",
+        "text": {
+            "preview_url": False,
+            "body": "EdTech Hub Connection Test: WhatsApp bot is successfully connected! 🎉",
+        },
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(_messages_url(), headers=_headers(), json=payload)
+
+        data = resp.json() if resp.text else {}
+        if resp.status_code < 300:
+            return {
+                "success": True,
+                "status_code": resp.status_code,
+                "message": "Message sent successfully!",
+                "data": data,
+            }
+        else:
+            err = data.get("error", {})
+            code = err.get("code")
+            msg = err.get("message", resp.text)
+            hint = "Meta API returned an error."
+            if code == 190:
+                hint = "Access Token Expired: Generate a new Access Token in Meta Developer Portal (WhatsApp > API Setup or System Users) and update WHATSAPP_TOKEN in Vercel."
+            elif code == 131030:
+                hint = "Recipient Not Allowed: In Meta Developer Portal (WhatsApp > API Setup), add this phone number to the 'To' test recipient list and verify it with the OTP code."
+            elif code == 131047:
+                hint = "24-Hour Window Expired: Message the bot from your WhatsApp app first (type 'hi') to open the 24-hour window."
+            elif code == 100:
+                hint = "Invalid Parameter: Check the phone number format (country code + number, e.g. 15551234567)."
+
+            return {
+                "success": False,
+                "status_code": resp.status_code,
+                "code": code,
+                "error": msg,
+                "hint": hint,
+                "data": data,
+            }
+    except Exception as exc:
+        return {
+            "success": False,
+            "status_code": 0,
+            "error": str(exc),
+            "hint": "Network error while connecting to Meta Graph API.",
+        }

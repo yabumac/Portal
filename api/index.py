@@ -72,6 +72,14 @@ try:
         if os.path.exists(logo_path):
             return FileResponse(logo_path, media_type="image/png")
         return Response(status_code=404)
+
+    @app.get("/media/{filename:path}")
+    async def serve_media_asset(filename: str):
+        media_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "media", filename)
+        if os.path.exists(media_path):
+            media_type = "video/mp4" if filename.lower().endswith(".mp4") else ("image/png" if filename.lower().endswith(".png") else "application/octet-stream")
+            return FileResponse(media_path, media_type=media_type)
+        return Response(status_code=404)
 except Exception as e:
     logger.error(f"Failed to load admin router: {e}", exc_info=True)
 
@@ -120,7 +128,9 @@ async def health_check(request: Request):
 # GET: webhook verification
 # ---------------------------------------------------------------------------
 @app.get("/webhook")
+@app.get("/webhook/")
 @app.get("/api/webhook")
+@app.get("/api/webhook/")
 async def webhook_verification(request: Request):
     params = request.query_params
     mode = params.get("hub.mode")
@@ -142,15 +152,28 @@ async def webhook_verification(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# POST: webhook events
+# POST: webhook events (all paths caught for serverless compatibility)
 # ---------------------------------------------------------------------------
+@app.post("/")
 @app.post("/webhook")
-@app.post("/api/webhook")
+@app.post("/webhook/")
 @app.post("/api")
-async def handle_post(request: Request):
+@app.post("/api/")
+@app.post("/api/webhook")
+@app.post("/api/webhook/")
+@app.post("/api/index.py")
+@app.post("/{path:path}")
+async def handle_post(request: Request, path: str = ""):
+    clean_path = path.strip("/").lower()
+
+    # Route admin login POST
+    if clean_path.startswith("admin/login") or clean_path == "login":
+        from api.admin import login_submit
+        return await login_submit(request)
+
     try:
         data = await request.json()
-        logger.debug("Incoming webhook payload: %s", data)
+        logger.info("Incoming webhook payload received: %s", str(data)[:400])
 
         for entry in data.get("entry", []):
             changes = entry.get("changes", [])
@@ -160,9 +183,14 @@ async def handle_post(request: Request):
                     # wa_id is the actual phone number of the user!
                     wa_id = message.get("from")
                     if wa_id:
+                        logger.info("Processing message from wa_id=%s, type=%s", wa_id, message.get("type"))
                         await handle_incoming(str(wa_id), message)
     except Exception as exc:
         logger.error("Error handling webhook POST: %s", exc, exc_info=True)
+        try:
+            db.log_activity("system", "webhook_post_error", str(exc))
+        except Exception:
+            pass
 
     return {"status": "ok"}
 
@@ -193,6 +221,13 @@ async def catch_all_get(request: Request, path: str = ""):
         from api.admin import admin_logo
         return await admin_logo()
 
+    if clean_path.startswith("media/"):
+        filename = clean_path[len("media/"):].strip("/")
+        media_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "media", filename)
+        if os.path.exists(media_path):
+            media_type = "video/mp4" if filename.endswith(".mp4") else ("image/png" if filename.endswith(".png") else "application/octet-stream")
+            return FileResponse(media_path, media_type=media_type)
+
     return Response(
         content='{"status": "ok", "message": "WhatsApp Learning Bot running"}',
         media_type="application/json",
@@ -203,7 +238,13 @@ async def catch_all_get(request: Request, path: str = ""):
 # Incoming message router
 # ---------------------------------------------------------------------------
 async def handle_incoming(wa_id: str, message: dict) -> None:
-    await whatsapp.mark_as_read(message.get("id"))
+    try:
+        msg_id = message.get("id")
+        if msg_id:
+            await whatsapp.mark_as_read(msg_id)
+    except Exception as read_err:
+        logger.warning("Could not mark message as read (non-fatal): %s", read_err)
+
     msg_type = message.get("type")
 
     # Log user incoming interaction
@@ -386,12 +427,23 @@ async def send_menu(wa_id: str, fresh: bool = True) -> None:
             )
         else:
             await whatsapp.send_text(wa_id, curriculum.BOT_INTRO)
-            await whatsapp.send_media(
-                wa_id,
-                "video",
-                curriculum.INTRO_VIDEO_URL,
-                caption="EdTech Hub - AI for Educators",
-            )
+            try:
+                video_url = curriculum.INTRO_VIDEO_URL
+                if not video_url.startswith(("http://", "https://")):
+                    public_host = os.getenv("PUBLIC_URL") or os.getenv("VERCEL_URL") or "portal-six-sepia-65.vercel.app"
+                    if not public_host.startswith("http"):
+                        public_host = f"https://{public_host}"
+                    clean_path = video_url.lstrip("./").lstrip("/")
+                    video_url = f"{public_host}/{clean_path}"
+
+                await whatsapp.send_media(
+                    wa_id,
+                    "video",
+                    video_url,
+                    caption="EdTech Hub - AI for Educators",
+                )
+            except Exception as media_err:
+                logger.warning("Could not send intro video (non-blocking): %s", media_err)
     else:
         await whatsapp.send_text(wa_id, "Main menu:")
 
@@ -439,10 +491,21 @@ async def deliver_lesson(wa_id: str, lesson) -> None:
 
     media = lesson.get("media")
     if media:
-        await whatsapp.send_media(
-            wa_id, media["type"], media["url"],
-            caption=media.get("caption"), filename=media.get("filename"),
-        )
+        try:
+            m_url = media.get("url", "")
+            if m_url and not m_url.startswith(("http://", "https://")):
+                public_host = os.getenv("PUBLIC_URL") or os.getenv("VERCEL_URL") or "portal-six-sepia-65.vercel.app"
+                if not public_host.startswith("http"):
+                    public_host = f"https://{public_host}"
+                clean_path = m_url.lstrip("./").lstrip("/")
+                m_url = f"{public_host}/{clean_path}"
+
+            await whatsapp.send_media(
+                wa_id, media["type"], m_url,
+                caption=media.get("caption"), filename=media.get("filename"),
+            )
+        except Exception as media_err:
+            logger.warning("Could not send lesson media (non-blocking): %s", media_err)
 
     await whatsapp.send_buttons(
         wa_id,

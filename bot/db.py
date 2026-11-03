@@ -30,7 +30,7 @@ SYSTEM_TMP = os.environ.get("TMPDIR") or os.environ.get("TEMP") or os.environ.ge
 SQLITE_PATH = (
     os.getenv("DATABASE_PATH")
     or os.getenv("SQLITE_PATH")
-    or os.path.join(DATA_DIR, "portal.db")
+    or (os.path.join(SYSTEM_TMP, "portal.db") if os.environ.get("VERCEL") else os.path.join(DATA_DIR, "portal.db"))
 )
 FALLBACK_SQLITE_PATH = os.path.join(SYSTEM_TMP, "portal.db")
 
@@ -46,6 +46,7 @@ SYSTEM_TMP_USERS_FILE = os.path.join(SYSTEM_TMP, "whatsapp_bot_users.json") if S
 # In-memory fast cache
 _MEMORY_CACHE: Dict[str, dict] = {}
 _ACTIVE_BACKEND: str = "sqlite"
+_ACTIVE_SQLITE_PATH: str = SQLITE_PATH
 _DB_INITIALIZED: bool = False
 
 
@@ -66,31 +67,49 @@ def _ensure_dirs() -> None:
 
 
 def _get_sqlite_connection() -> sqlite3.Connection:
-    _ensure_dirs()
-    target_path = SQLITE_PATH
+    global _ACTIVE_SQLITE_PATH
+    target_path = _ACTIVE_SQLITE_PATH or SQLITE_PATH
     try:
         dir_name = os.path.dirname(target_path)
         if dir_name:
             os.makedirs(dir_name, exist_ok=True)
-        conn = sqlite3.connect(target_path, timeout=10.0)
-        conn.execute("CREATE TABLE IF NOT EXISTS _test_write (id INT)")
-        conn.commit()
+        conn = sqlite3.connect(target_path, timeout=15.0)
+        conn.execute("PRAGMA busy_timeout = 10000")
         return conn
     except Exception as e:
-        logger.warning(f"Could not use primary SQLite path {target_path}: {e}. Falling back to {FALLBACK_SQLITE_PATH}")
+        logger.warning(f"Could not connect to {target_path}: {e}. Falling back to {FALLBACK_SQLITE_PATH}")
         try:
+            _ACTIVE_SQLITE_PATH = FALLBACK_SQLITE_PATH
             os.makedirs(os.path.dirname(FALLBACK_SQLITE_PATH), exist_ok=True)
-            return sqlite3.connect(FALLBACK_SQLITE_PATH, timeout=10.0)
+            conn = sqlite3.connect(FALLBACK_SQLITE_PATH, timeout=15.0)
+            conn.execute("PRAGMA busy_timeout = 10000")
+            return conn
         except Exception as e2:
             logger.error(f"Failed to connect to fallback SQLite: {e2}")
-            return sqlite3.connect(":memory:", timeout=10.0)
+            _ACTIVE_SQLITE_PATH = ":memory:"
+            return sqlite3.connect(":memory:", timeout=15.0)
 
 
 def init_db() -> str:
     """Initialize database tables and backend. Safe to call multiple times."""
-    global _ACTIVE_BACKEND, _DB_INITIALIZED
+    global _ACTIVE_BACKEND, _ACTIVE_SQLITE_PATH, _DB_INITIALIZED
     if _DB_INITIALIZED:
         return _ACTIVE_BACKEND
+
+    # Test writability of preferred SQLITE_PATH once
+    try:
+        _ensure_dirs()
+        dir_name = os.path.dirname(SQLITE_PATH)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
+        test_conn = sqlite3.connect(SQLITE_PATH, timeout=5.0)
+        test_conn.execute("CREATE TABLE IF NOT EXISTS _schema_version (version INT)")
+        test_conn.commit()
+        test_conn.close()
+        _ACTIVE_SQLITE_PATH = SQLITE_PATH
+    except Exception as write_err:
+        logger.info(f"Primary SQLite path {SQLITE_PATH} not writable ({write_err}). Using {FALLBACK_SQLITE_PATH}")
+        _ACTIVE_SQLITE_PATH = FALLBACK_SQLITE_PATH
 
     try:
         conn = _get_sqlite_connection()
