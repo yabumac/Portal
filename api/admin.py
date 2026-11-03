@@ -1303,13 +1303,13 @@ async def admin_dashboard(request: Request):
                 </div>
             </div>
 
-            <!-- 11-Module Progression Funnel -->
+            <!-- 7-Module Progression Funnel -->
             <div class="chart-card">
                 <div class="chart-card-header">
                     <div class="chart-title-wrap">
                         <span style="font-size:20px;">&#x1F522;</span>
                         <div>
-                            <h2 class="chart-card-title">11-Module Funnel</h2>
+                            <h2 class="chart-card-title">7-Module Funnel</h2>
                             <p class="chart-subtitle">Learner progression & drop-off</p>
                         </div>
                     </div>
@@ -1578,10 +1578,11 @@ async def admin_dashboard(request: Request):
                 }}
             }});
 
-            // 4. Bar Chart: 11-Module Progression Funnel
+            // 4. Bar Chart: 7-Module Progression Funnel
             const funnelCtx = document.getElementById('funnelBarChart').getContext('2d');
-            const funnelCounts = data.progression_funnel ? data.progression_funnel.lesson_counts : new Array(11).fill(0);
-            const funnelLabels = data.progression_funnel ? data.progression_funnel.labels : Array.from({{length: 11}}, (_, i) => `Mod ${{i+1}}`);
+            const totalMods = data.progression_funnel ? data.progression_funnel.total_modules : 7;
+            const funnelCounts = data.progression_funnel ? data.progression_funnel.lesson_counts : new Array(totalMods).fill(0);
+            const funnelLabels = data.progression_funnel ? data.progression_funnel.labels : Array.from({{length: totalMods}}, (_, i) => `Mod ${{i+1}}`);
 
             if (funnelChart) funnelChart.destroy();
             funnelChart = new Chart(funnelCtx, {{
@@ -1913,7 +1914,7 @@ async def admin_dashboard(request: Request):
                         <div><b>Status:</b> ${{u.phase.toUpperCase()}}</div>
                         <div><b>Current Step:</b> ${{u.lesson_index !== null ? 'Module ' + (u.lesson_index + 1) : 'None'}}</div>
                         <div><b>Total Interactions:</b> ${{u.total_messages || 0}} msgs</div>
-                        <div><b>Completed Modules:</b> ${{(u.completed_lessons || []).length}} / 11</div>
+                        <div><b>Completed Modules:</b> ${{(u.completed_lessons || []).length}} / ${{data.progression_funnel ? data.progression_funnel.total_modules : 7}}</div>
                         <div><b>Last Active:</b> ${{u.last_seen ? new Date(u.last_seen).toLocaleString() : 'Never'}}</div>
                     </div>
                     <h4 style="font-size:14px;margin-bottom:12px;font-weight:700;">Chronological Learning Log (${{hist.length}} actions)</h4>

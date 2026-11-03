@@ -326,8 +326,8 @@ async def handle_text(wa_id: str, raw: str) -> None:
                 await deliver_lesson(wa_id, lesson)
                 return
 
-    # quiz phase: letter typed -> answer
-    if phase == "quiz" and low in ("a", "b", "c"):
+    # quiz phase: letter or option number typed -> answer
+    if phase == "quiz" and low in ("a", "b", "c", "d", "1", "2", "3", "4"):
         await handle_quiz_answer(wa_id, low.upper())
         return
 
@@ -419,10 +419,11 @@ async def send_menu(wa_id: str, fresh: bool = True) -> None:
         if has_progress:
             lesson = state.current_lesson(cur)
             lesson_title = lesson["title"] if lesson else f"Module {lesson_idx + 1}"
+            total_mods = curriculum.total_lessons(cur.get("unit_id") or curriculum.DEFAULT_UNIT_ID) or 7
             await whatsapp.send_text(
                 wa_id,
                 f"Welcome back to EdTech Hub!\n\n"
-                f"You are currently on: {lesson_title} (Completed {len(completed)}/11 modules).\n\n"
+                f"You are currently on: {lesson_title} (Completed {len(completed)}/{total_mods} modules).\n\n"
                 f"Choose an option below to continue where you left off:",
             )
         else:
@@ -541,16 +542,15 @@ async def send_quiz(wa_id: str) -> None:
 
     options = quiz["options"]
     body = quiz["question"]
-    for letter in ("A", "B", "C", "D", "E"):
-        if letter in options:
-            body += f"\n\n{letter}) {options[letter]}"
+    for key in options:
+        body += f"\n\n{key}) {options[key]}"
 
     await whatsapp.send_buttons(
         wa_id,
         body,
-        [{"id": f"{ANSWER_PREFIX}{letter}", "title": letter} for letter in options],
+        [{"id": f"{ANSWER_PREFIX}{key}", "title": key} for key in options],
         header=f"Quiz - {lesson['title']}",
-        footer="Tap A, B or C",
+        footer="Tap an option",
     )
     state.open_quiz(wa_id)
 
@@ -567,7 +567,9 @@ async def handle_quiz_answer(wa_id: str, answer: str) -> None:
     lesson_id = lesson["id"]
 
     if not curriculum.is_valid_option(unit_id, lesson_id, answer):
-        await whatsapp.send_text(wa_id, "Please tap A, B or C below.")
+        quiz = curriculum.get_quiz(unit_id, lesson_id)
+        opts_hint = ", ".join(quiz["options"].keys()) if quiz else "your choice"
+        await whatsapp.send_text(wa_id, f"Please tap {opts_hint} below.")
         await send_quiz(wa_id)
         return
 

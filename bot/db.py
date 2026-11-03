@@ -500,8 +500,15 @@ def get_analytics_summary() -> dict:
         "idle": 0,
     }
 
-    # Funnel per lesson index (0 to 10 for 11 lessons)
-    lesson_funnel = [0] * 11
+    total_mods = 7
+    try:
+        from content import curriculum
+        total_mods = curriculum.total_lessons() or 7
+    except Exception:
+        pass
+
+    # Funnel per lesson index (0 to total_mods-1)
+    lesson_funnel = [0] * total_mods
 
     # Format user rows
     users_list = []
@@ -514,7 +521,7 @@ def get_analytics_summary() -> dict:
         msg_count = u.get("total_messages", 0)
         total_interactions += msg_count
 
-        if phase == "complete" or len(completed_lessons) >= 11:
+        if phase == "complete" or len(completed_lessons) >= total_mods:
             completed_learners += 1
             status_distribution["completed"] += 1
             progress_pct = 100
@@ -522,22 +529,22 @@ def get_analytics_summary() -> dict:
             active_learners += 1
             status_distribution["lesson"] += 1
             curr_idx = lesson_idx if lesson_idx is not None else 0
-            progress_pct = min(100, round((curr_idx / 11) * 100))
-            if 0 <= curr_idx < 11:
+            progress_pct = min(100, round((curr_idx / total_mods) * 100))
+            if 0 <= curr_idx < total_mods:
                 lesson_funnel[curr_idx] += 1
         elif phase == "quiz":
             active_learners += 1
             status_distribution["quiz"] += 1
             curr_idx = lesson_idx if lesson_idx is not None else 0
-            progress_pct = min(100, round((curr_idx / 11) * 100))
-            if 0 <= curr_idx < 11:
+            progress_pct = min(100, round((curr_idx / total_mods) * 100))
+            if 0 <= curr_idx < total_mods:
                 lesson_funnel[curr_idx] += 1
         elif phase == "tutor":
             active_learners += 1
             status_distribution["tutor"] += 1
             curr_idx = lesson_idx if lesson_idx is not None else 0
-            progress_pct = min(100, round((curr_idx / 11) * 100))
-            if 0 <= curr_idx < 11:
+            progress_pct = min(100, round((curr_idx / total_mods) * 100))
+            if 0 <= curr_idx < total_mods:
                 lesson_funnel[curr_idx] += 1
         elif phase == "assessment":
             status_distribution["assessment"] += 1
@@ -555,7 +562,7 @@ def get_analytics_summary() -> dict:
 
         current_module_title = f"Module {(lesson_idx + 1) if lesson_idx is not None else 1}"
         if phase == "complete":
-            current_module_title = "Course Completed (11/11)"
+            current_module_title = f"Course Completed ({total_mods}/{total_mods})"
         elif phase == "assessment":
             current_module_title = f"AI Self-Assessment ({len(assess_answers)}/4)"
         elif phase == "idle":
@@ -708,8 +715,8 @@ def get_analytics_summary() -> dict:
         },
         "progression_funnel": {
             "lesson_counts": lesson_funnel,
-            "labels": [f"Mod {i+1}" for i in range(11)],
-            "total_modules": 11,
+            "labels": [f"Mod {i+1}" for i in range(total_mods)],
+            "total_modules": total_mods,
         },
         "assessment_insights": assessment_summary,
         "users": users_list,
