@@ -571,31 +571,18 @@ async def send_menu(wa_id: str, fresh: bool = True) -> None:
                 f"Choose an option below to continue where you left off:",
             )
         else:
-            # Send company logo image upon greeting
+            # Send welcome video clip (user's provided video instead of edtech logo picture)
             try:
-                logo_url = get_public_media_url("logo.png")
-                await whatsapp.send_media(
-                    wa_id,
-                    "image",
-                    logo_url,
-                    caption="EdTech Hub - AI for Ethiopian Educators",
-                )
-                await asyncio.sleep(0.5)
-            except Exception as logo_err:
-                logger.warning("Could not send welcome logo (non-blocking): %s", logo_err)
-
-            # Send welcome overview video clip
-            try:
-                video_url = get_public_media_url("vid_01_welcome.mp4")
+                video_url = get_public_media_url("welcome_video.mp4")
                 await whatsapp.send_media(
                     wa_id,
                     "video",
                     video_url,
-                    caption="Course Overview: 4 Learning Objectives",
+                    caption="Welcome to AI for Teaching and Learning (Ethiopian Educators Edition)",
                 )
                 await asyncio.sleep(0.6)
             except Exception as media_err:
-                logger.warning("Could not send intro video (non-blocking): %s", media_err)
+                logger.warning("Could not send welcome video (non-blocking): %s", media_err)
 
             await whatsapp.send_text(wa_id, curriculum.BOT_INTRO)
             await asyncio.sleep(0.3)

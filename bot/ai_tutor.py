@@ -105,6 +105,13 @@ STRICT SYSTEMATIC GUARDRAILS & PEDAGOGICAL RULES:
    - Professional, encouraging, and clear for WhatsApp reading.
    - Keep answers concise (under {_MAX_ANSWER_WORDS} words) in plain text.
    - Do NOT use aggressive or childish emojis.
+
+5. CRITICAL DIRECT RESPONSE RULE:
+   - You are chatting directly with an educator on WhatsApp.
+   - Output ONLY the final pedagogical answer intended for the teacher.
+   - NEVER output internal thinking, chain-of-thought, reasoning scratchpads, checklist items, or drafting evaluations.
+   - NEVER output bullet points like '* User Question:', '* Role:', '* Constraint Check:', or '* Drafting:'.
+   - Start directly with your pedagogical response text.
 """
 
 
@@ -282,6 +289,60 @@ async def _discover_models(client: httpx.AsyncClient, api_key: str) -> list[str]
     return valid_models
 
 
+def clean_ai_output(text: str) -> str:
+    """
+    Sanitize model output:
+    1. Strips <thought>...</thought> tags if present.
+    2. Strips chain-of-thought scratchpads (e.g. * User Question:, * Constraint Check:, * Drafting:).
+    3. Extracts final response clean of internal reasoning.
+    """
+    if not text:
+        return ""
+
+    # Strip XML-style thinking or reasoning tags
+    text = re.sub(r"<thought>.*?</thought>", "", text, flags=re.DOTALL).strip()
+    text = re.sub(r"<reasoning>.*?</reasoning>", "", text, flags=re.DOTALL).strip()
+
+    # Detect scratchpad / reasoning leak markers
+    scratchpad_markers = (
+        "*   User Question:", "* User Question:",
+        "*   Current Module:", "* Current Module:",
+        "*   Role:", "* Role:",
+        "*   Context:", "* Context:",
+        "*   Constraint Check:", "* Constraint Check:",
+        "*   Drafting:", "* Drafting:",
+        "*   Word Count Check:", "* Word Count Check:",
+        "*   Tone Check:", "* Tone Check:",
+        "*   Content Check:", "* Content Check:",
+    )
+
+    if any(marker in text for marker in scratchpad_markers):
+        # 1. Try to extract final quoted text block if present (e.g., "In Module 1, ...")
+        quotes = re.findall(r'"([A-Z][^"]{40,})"', text, flags=re.DOTALL)
+        if quotes:
+            return quotes[-1].strip()
+
+        # 2. Try to extract text under '* Drafting:*'
+        drafting_m = re.search(r'\*\s*\*Drafting:\*\s*\n(.*?)(?=\n\s*\*|\Z)', text, flags=re.DOTALL)
+        if drafting_m:
+            draft_candidate = drafting_m.group(1).strip()
+            if draft_candidate:
+                return draft_candidate
+
+        # 3. Filter out scratchpad lines
+        clean_lines = []
+        for line in text.splitlines():
+            s = line.strip()
+            if s.startswith('*') and any(m.strip('* :') in s for m in scratchpad_markers):
+                continue
+            clean_lines.append(line)
+        cleaned = "\n".join(clean_lines).strip()
+        if cleaned:
+            return cleaned
+
+    return text.strip()
+
+
 async def _answer_rest(question: str, section: str, module_title: str) -> str:
     """
     Direct REST call to Gemini API with dynamic model discovery and universal payload fallback.
@@ -350,10 +411,19 @@ async def _answer_rest(question: str, section: str, module_title: str) -> str:
                             candidates = data.get("candidates", [])
                             if candidates:
                                 parts = candidates[0].get("content", {}).get("parts", [])
-                                if parts:
-                                    text = parts[0].get("text", "").strip()
-                                    if text:
-                                        return text
+                                valid_parts = []
+                                for p in parts:
+                                    # Never include thought / internal reasoning parts
+                                    if p.get("thought") is True:
+                                        continue
+                                    txt = p.get("text", "").strip()
+                                    if txt:
+                                        valid_parts.append(txt)
+
+                                raw_text = "\n".join(valid_parts).strip() if valid_parts else (parts[-1].get("text", "").strip() if parts else "")
+                                text = clean_ai_output(raw_text)
+                                if text:
+                                    return text
                         else:
                             last_error = f"{model_name} ({api_version}) HTTP {resp.status_code}: {resp.text[:120]}"
                     except Exception as e:
@@ -410,7 +480,8 @@ def _answer_sync(question: str, section: str, module_title: str) -> str:
                 inlined_prompt = f"SYSTEM INSTRUCTION & PEDAGOGICAL GUIDELINES:\n{system_inst}\n\nTEACHER QUESTION:\n{question}"
                 response = model.generate_content(inlined_prompt)
 
-            text = (response.text or "").strip()
+            raw_text = (response.text or "").strip()
+            text = clean_ai_output(raw_text)
             if text:
                 return text
         except Exception as err:
