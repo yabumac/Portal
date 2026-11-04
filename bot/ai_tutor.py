@@ -73,45 +73,34 @@ def build_rag_context() -> str:
 def _build_system_instruction(section: str = "", module_title: str = "") -> str:
     current_module_label = module_title.strip() if module_title else "AI for Teaching and Learning"
 
-    return f"""You are the expert AI Pedagogical Tutor for Ethiopian educators taking the course: "AI for Teaching and Learning (Ethiopian Educators Edition)" by EdTech Hub.
+    return f"""You are the friendly, encouraging WhatsApp AI Pedagogical Tutor for Ethiopian educators taking the course: "AI for Teaching and Learning" by EdTech Hub.
 
-CURRENT ACTIVE MODULE / TOPIC:
+You are conversing directly with an educator in WhatsApp chat.
+Write warm, concise, conversational replies (under 130 words) in plain text.
+Never use internal notes, planning outlines, bulleted checklists, or meta-talk. Never write "* Goal:", "* Domain:", "* Constraints:", or "* Draft:". Speak directly to the teacher as a helpful colleague.
+
+Teacher's Active Module:
 {current_module_label}
 
-CURRENT MODULE REFERENCE MATERIAL:
+Lesson Content Context:
 {section if section else 'General Course Curriculum'}
 
-FULL COURSE SYLLABUS REFERENCE:
+Course Reference Syllabus:
 {build_rag_context()}
 
-STRICT SYSTEMATIC GUARDRAILS & PEDAGOGICAL RULES:
-1. IN-SCOPE DOMAIN:
-   You strictly answer questions about:
-   - The teacher's current module ({current_module_label})
-   - Educational AI tools and prompt engineering (5-Part Prompt Formula: Role, Context, Task, Constraints, Output Format)
-   - Ethiopian classroom realities (50+ students, low connectivity, single phone preparation, chalkboard transcription)
-   - 5-step lesson planning (Objective, Hook, Instruction, Practice, Exit Ticket)
-   - Formative assessment (Evidence to Action), Universal Design for Learning (UDL), and ethical safeguards / student privacy.
+Core Pedagogical Pillars:
+- Generative AI is a pattern-prediction assistant; the teacher is the essential editor and controller with final authority.
+- 5-Part Formula: Role, Context, Task, Constraints, Output Format.
+- Ethiopian context: large classes (50+ students), low connectivity, single-phone batch prep, chalkboard delivery.
+- Lesson planning: Objective, Hook, Direct Instruction, Guided Practice, Exit Ticket.
+- Formative assessment: Evidence to Action.
+- Universal Design for Learning (UDL): multiple means of access, tiered texts, bilingual glossaries.
+- Privacy: never input student names, grades, or personal details into AI.
 
-2. MODULE ELABORATION:
-   When answering questions related to teaching or this course, elaborate clearly and practically. Tie your answer directly to {current_module_label} and offer realistic, low-resource Ethiopian classroom examples.
-
-3. OUT-OF-SCOPE REFUSAL (GUARDRAIL):
-   If the user asks questions completely unrelated to teaching, education, or AI pedagogy (e.g., sports, celebrity gossip, software development unrelated to education, political debates, cryptocurrency, or entertainment):
-   DO NOT answer the off-topic query. Politely decline with this exact message:
-   "I am your AI Tutor dedicated specifically to the 'AI for Teaching and Learning' course. I can only assist with pedagogical strategies and your current module ({current_module_label}). Feel free to ask any question about this lesson or how to use AI in your classroom!"
-
-4. TONE & FORMATTING:
-   - Professional, encouraging, and clear for WhatsApp reading.
-   - Keep answers concise (under {_MAX_ANSWER_WORDS} words) in plain text.
-   - Do NOT use aggressive or childish emojis.
-
-5. CRITICAL DIRECT RESPONSE RULE:
-   - You are chatting directly with an educator on WhatsApp.
-   - Output ONLY the final pedagogical answer intended for the teacher.
-   - NEVER output internal thinking, chain-of-thought, reasoning scratchpads, checklist items, or drafting evaluations.
-   - NEVER output bullet points like '* User Question:', '* Role:', '* Constraint Check:', or '* Drafting:'.
-   - Start directly with your pedagogical response text.
+Off-Topic Guardrail:
+If the user asks questions unrelated to teaching or education (e.g., sports, celebrity gossip, software development unrelated to education, political debates, cryptocurrency, or entertainment):
+Politely reply:
+"I am your AI Tutor dedicated to the 'AI for Teaching and Learning' course. I can only assist with pedagogical strategies and your current module ({current_module_label}). Feel free to ask any question about this lesson or how to use AI in your classroom!"
 """
 
 
@@ -289,58 +278,66 @@ async def _discover_models(client: httpx.AsyncClient, api_key: str) -> list[str]
     return valid_models
 
 
-def clean_ai_output(text: str) -> str:
+SCRATCHPAD_PATTERNS = [
+    r"^\s*\*\s+(Goal|Domain|Constraints?|Concept|Draft|Drafting|Formatting|Tone|Word Count|User Question|Current Module|Role|Context|Module \d+ Content|Content Check|Constraint Check)\b",
+]
+
+
+def is_scratchpad_header(line: str) -> bool:
+    for pat in SCRATCHPAD_PATTERNS:
+        if re.search(pat, line, re.IGNORECASE):
+            return True
+    return False
+
+
+def clean_ai_output(t: str, fallback_fn=None) -> str:
     """
     Sanitize model output:
     1. Strips <thought>...</thought> tags if present.
-    2. Strips chain-of-thought scratchpads (e.g. * User Question:, * Constraint Check:, * Drafting:).
+    2. Strips chain-of-thought scratchpads (e.g. * Goal:, * Domain:, * Constraints:, * Draft:).
     3. Extracts final response clean of internal reasoning.
+    4. If only an aborted scratchpad was produced, seamlessly invokes fallback_fn.
     """
-    if not text:
-        return ""
+    if not t:
+        return fallback_fn() if fallback_fn else ""
+    t = t.strip()
 
-    # Strip XML-style thinking or reasoning tags
-    text = re.sub(r"<thought>.*?</thought>", "", text, flags=re.DOTALL).strip()
-    text = re.sub(r"<reasoning>.*?</reasoning>", "", text, flags=re.DOTALL).strip()
+    # Strip XML thinking or reasoning tags
+    t = re.sub(r"<thought>.*?</thought>", "", t, flags=re.DOTALL).strip()
+    t = re.sub(r"<reasoning>.*?</reasoning>", "", t, flags=re.DOTALL).strip()
 
-    # Detect scratchpad / reasoning leak markers
-    scratchpad_markers = (
-        "*   User Question:", "* User Question:",
-        "*   Current Module:", "* Current Module:",
-        "*   Role:", "* Role:",
-        "*   Context:", "* Context:",
-        "*   Constraint Check:", "* Constraint Check:",
-        "*   Drafting:", "* Drafting:",
-        "*   Word Count Check:", "* Word Count Check:",
-        "*   Tone Check:", "* Tone Check:",
-        "*   Content Check:", "* Content Check:",
-    )
+    # Check for trivial title echo
+    if t.lower().strip() in (
+        "ai for teaching and learning",
+        "ai for teaching and learning (ethiopian educators edition)",
+        "module 1: ai basics and the teacher as editor",
+    ):
+        return fallback_fn() if fallback_fn else ""
 
-    if any(marker in text for marker in scratchpad_markers):
-        # 1. Try to extract final quoted text block if present (e.g., "In Module 1, ...")
-        quotes = re.findall(r'"([A-Z][^"]{40,})"', text, flags=re.DOTALL)
+    # Check if text contains scratchpad meta-talk
+    has_scratchpad = any(re.search(pat, t, re.MULTILINE | re.IGNORECASE) for pat in SCRATCHPAD_PATTERNS)
+
+    if has_scratchpad:
+        # 1. Look for 'Draft 1:' or 'Drafting:' or 'Final Response:'
+        draft_match = re.search(r'(?:Draft\s*\d*|Drafting|Final Response):\s*(.*?)(?=\n\s*\*|\Z)', t, flags=re.DOTALL | re.IGNORECASE)
+        if draft_match:
+            candidate = draft_match.group(1).strip().strip('"')
+            if len(candidate) > 50 and not candidate.startswith('*'):
+                return candidate
+
+        # 2. Look for the last quoted multi-sentence paragraph
+        quotes = re.findall(r'"([A-Z][^"]{50,})"', t, flags=re.DOTALL)
         if quotes:
-            return quotes[-1].strip()
+            return quotes[-1].strip().strip('"')
 
-        # 2. Try to extract text under '* Drafting:*'
-        drafting_m = re.search(r'\*\s*\*Drafting:\*\s*\n(.*?)(?=\n\s*\*|\Z)', text, flags=re.DOTALL)
-        if drafting_m:
-            draft_candidate = drafting_m.group(1).strip()
-            if draft_candidate:
-                return draft_candidate
+        # 3. If there is no clean draft and the text is predominantly bulleted planning
+        return fallback_fn() if fallback_fn else ""
 
-        # 3. Filter out scratchpad lines
-        clean_lines = []
-        for line in text.splitlines():
-            s = line.strip()
-            if s.startswith('*') and any(m.strip('* :') in s for m in scratchpad_markers):
-                continue
-            clean_lines.append(line)
-        cleaned = "\n".join(clean_lines).strip()
-        if cleaned:
-            return cleaned
+    # If the text starts with a scratchpad bullet
+    if t.startswith('*') and is_scratchpad_header(t.splitlines()[0]):
+        return fallback_fn() if fallback_fn else ""
 
-    return text.strip()
+    return t
 
 
 async def _answer_rest(question: str, section: str, module_title: str) -> str:
@@ -367,6 +364,9 @@ async def _answer_rest(question: str, section: str, module_title: str) -> str:
         "generationConfig": {
             "temperature": 0.3,
             "maxOutputTokens": _MAX_OUTPUT_TOKENS,
+            "thinkingConfig": {
+                "thinkingBudget": 0
+            }
         }
     }
 
@@ -374,7 +374,7 @@ async def _answer_rest(question: str, section: str, module_title: str) -> str:
         "contents": [
             {
                 "role": "user",
-                "parts": [{"text": f"SYSTEM INSTRUCTIONS & PEDAGOGICAL RULES:\n{system_inst}\n\nTEACHER QUESTION:\n{question}"}]
+                "parts": [{"text": f"{system_inst}\n\nTEACHER QUESTION:\n{question}"}]
             }
         ],
         "generationConfig": {
@@ -421,7 +421,7 @@ async def _answer_rest(question: str, section: str, module_title: str) -> str:
                                         valid_parts.append(txt)
 
                                 raw_text = "\n".join(valid_parts).strip() if valid_parts else (parts[-1].get("text", "").strip() if parts else "")
-                                text = clean_ai_output(raw_text)
+                                text = clean_ai_output(raw_text, fallback_fn=lambda: answer_pedagogy_kb(question, section, module_title))
                                 if text:
                                     return text
                         else:
@@ -481,7 +481,7 @@ def _answer_sync(question: str, section: str, module_title: str) -> str:
                 response = model.generate_content(inlined_prompt)
 
             raw_text = (response.text or "").strip()
-            text = clean_ai_output(raw_text)
+            text = clean_ai_output(raw_text, fallback_fn=lambda: answer_pedagogy_kb(question, section, module_title))
             if text:
                 return text
         except Exception as err:
