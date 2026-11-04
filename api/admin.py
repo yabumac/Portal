@@ -308,6 +308,15 @@ async def test_whatsapp_endpoint(request: Request):
         return JSONResponse({"success": False, "error": str(e), "hint": "Check phone number format and server logs."})
 
 
+@router.get("/api/test-gemini")
+async def test_gemini_endpoint(request: Request):
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    from bot import ai_tutor
+    diagnostics = await ai_tutor.diagnose_gemini()
+    return JSONResponse(diagnostics)
+
+
 @router.get("/api/whatsapp-status")
 async def get_whatsapp_status(request: Request):
     if not is_authenticated(request):

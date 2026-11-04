@@ -158,6 +158,10 @@ async def health_check(request: Request):
         from api.admin import get_analytics_json
         return await get_analytics_json(request)
 
+    if "admin/api/test-gemini" in raw_path or "api/test-gemini" in raw_path:
+        from api.admin import test_gemini_endpoint
+        return await test_gemini_endpoint(request)
+
     if "admin" in raw_path or "dashboard" in raw_path or params.get("password") or params.get("pass"):
         from api.admin import admin_dashboard
         return await admin_dashboard(request)
@@ -262,6 +266,10 @@ async def catch_all_get(request: Request, path: str = ""):
     if clean_path in ("admin/api/analytics", "api/admin/analytics", "api/analytics"):
         from api.admin import get_analytics_json
         return await get_analytics_json(request)
+
+    if clean_path in ("admin/api/test-gemini", "api/admin/test-gemini", "api/test-gemini"):
+        from api.admin import test_gemini_endpoint
+        return await test_gemini_endpoint(request)
 
     if clean_path in ("admin/export/csv", "export/csv"):
         from api.admin import export_users_csv
