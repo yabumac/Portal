@@ -28,7 +28,13 @@ from content import curriculum
 logger = logging.getLogger("whatsapp_bot")
 
 DEFAULT_MODEL = "gemini-1.5-flash"
-FALLBACK_MODELS = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
+FALLBACK_MODELS = [
+    "gemini-1.5-flash",
+    "gemini-2.0-flash",
+    "gemini-2.5-flash",
+    "gemini-1.5-pro",
+    "gemini-pro",
+]
 
 _MAX_ANSWER_WORDS = 130
 _MAX_OUTPUT_TOKENS = 500
@@ -36,7 +42,10 @@ _MAX_OUTPUT_TOKENS = 500
 
 def _get_gemini_api_key() -> Optional[str]:
     """Retrieve Gemini API key from environment."""
-    return os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if key:
+        return key.strip().strip('"').strip("'")
+    return None
 
 
 def build_rag_context() -> str:
@@ -106,18 +115,29 @@ def _answer_sync(question: str, section: str, module_title: str) -> str:
     models_to_try = [preferred_model] + [m for m in FALLBACK_MODELS if m != preferred_model]
 
     for model_name in models_to_try:
-        if model_name == "gemini-2.5-flash":
-            model_name = DEFAULT_MODEL
         try:
-            model = genai.GenerativeModel(
-                model_name,
-                system_instruction=system_inst,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.3,
-                    max_output_tokens=_MAX_OUTPUT_TOKENS,
-                ),
-            )
-            response = model.generate_content(question)
+            try:
+                model = genai.GenerativeModel(
+                    model_name,
+                    system_instruction=system_inst,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=0.3,
+                        max_output_tokens=_MAX_OUTPUT_TOKENS,
+                    ),
+                )
+                response = model.generate_content(question)
+            except (TypeError, ValueError):
+                # Older SDK without system_instruction argument
+                model = genai.GenerativeModel(
+                    model_name,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=0.3,
+                        max_output_tokens=_MAX_OUTPUT_TOKENS,
+                    ),
+                )
+                inlined_prompt = f"SYSTEM INSTRUCTION & PEDAGOGICAL GUIDELINES:\n{system_inst}\n\nTEACHER QUESTION:\n{question}"
+                response = model.generate_content(inlined_prompt)
+
             text = (response.text or "").strip()
             if text:
                 return text
@@ -134,15 +154,33 @@ async def _answer_rest(question: str, section: str, module_title: str) -> str:
         return "The AI tutor is not configured yet. Ask your administrator to set GEMINI_API_KEY."
 
     system_inst = _build_system_instruction(section, module_title)
-    payload = {
+
+    # 1. Standard payload using camelCase systemInstruction
+    payload_primary = {
+        "systemInstruction": {
+            "parts": [{"text": system_inst}]
+        },
         "contents": [
             {
+                "role": "user",
                 "parts": [{"text": question}]
             }
         ],
-        "system_instruction": {
-            "parts": [{"text": system_inst}]
-        },
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": _MAX_OUTPUT_TOKENS,
+        }
+    }
+
+    # 2. Universal payload where system instructions are inlined directly into the prompt
+    # Works across all endpoints and model versions without schema errors
+    payload_universal = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": f"SYSTEM INSTRUCTIONS & PEDAGOGICAL RULES:\n{system_inst}\n\nTEACHER QUESTION:\n{question}"}]
+            }
+        ],
         "generationConfig": {
             "temperature": 0.3,
             "maxOutputTokens": _MAX_OUTPUT_TOKENS,
@@ -152,26 +190,35 @@ async def _answer_rest(question: str, section: str, module_title: str) -> str:
     preferred_model = os.getenv("GEMINI_MODEL") or DEFAULT_MODEL
     models_to_try = [preferred_model] + [m for m in FALLBACK_MODELS if m != preferred_model]
 
-    async with httpx.AsyncClient(timeout=25.0) as client:
+    last_error = ""
+    async with httpx.AsyncClient(timeout=30.0) as client:
         for model_name in models_to_try:
-            if model_name == "gemini-2.5-flash":
-                model_name = DEFAULT_MODEL
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-            try:
-                resp = await client.post(url, json=payload)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    candidates = data.get("candidates", [])
-                    if candidates:
-                        parts = candidates[0].get("content", {}).get("parts", [])
-                        if parts:
-                            text = parts[0].get("text", "").strip()
-                            if text:
-                                return text
-                else:
-                    logger.warning("Gemini REST model %s returned HTTP %s: %s", model_name, resp.status_code, resp.text[:200])
-            except Exception as e:
-                logger.warning("Gemini REST model %s request exception: %s", model_name, e)
+            for payload in (payload_primary, payload_universal):
+                try:
+                    resp = await client.post(url, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        candidates = data.get("candidates", [])
+                        if candidates:
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            if parts:
+                                text = parts[0].get("text", "").strip()
+                                if text:
+                                    return text
+                    else:
+                        last_error = f"{model_name} HTTP {resp.status_code}: {resp.text[:120]}"
+                        logger.warning("Gemini REST model %s returned HTTP %s: %s", model_name, resp.status_code, resp.text[:200])
+                except Exception as e:
+                    last_error = f"{model_name} exception: {e}"
+                    logger.warning("Gemini REST model %s request exception: %s", model_name, e)
+
+    if last_error:
+        try:
+            from bot import db
+            db.log_activity("system", "gemini_api_error", last_error)
+        except Exception:
+            pass
 
     return "I am your AI Tutor. I couldn't reach the service right now, but feel free to ask your question again in a moment!"
 

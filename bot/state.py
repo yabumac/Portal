@@ -60,20 +60,50 @@ def del_state(wa_id: str) -> None:
 
 # --- Course progression ------------------------------------------------------
 
+def is_course_complete(state: dict) -> bool:
+    """Check if the user has completed all modules in their active or default course unit."""
+    if not state:
+        return False
+    if state.get("phase") == "complete":
+        return True
+    unit_id = state.get("unit_id") or curriculum.DEFAULT_UNIT_ID
+    lesson_ids = curriculum.list_lessons(unit_id)
+    if not lesson_ids:
+        return False
+    lesson_idx = state.get("lesson_index")
+    completed = state.get("completed_lessons") or []
+    if (lesson_idx is not None and lesson_idx >= len(lesson_ids)) or len(completed) >= len(lesson_ids):
+        return True
+    return False
+
+
 def start_unit(wa_id: str, unit_id: str = None, restart: bool = False) -> dict:
     """
     Start or resume a unit for user.
     If restart is False and user already has progress in this unit, preserves their progress!
+    If the user has completed the course, preserves the completion status without looping.
     """
     unit_id = unit_id or curriculum.DEFAULT_UNIT_ID
     state = get_state(wa_id)
+    lesson_ids = curriculum.list_lessons(unit_id)
+
+    # If user already completed the course and is not explicitly restarting:
+    if not restart and is_course_complete(state):
+        state["phase"] = "complete"
+        set_state(wa_id, state)
+        return state
 
     # If user already has progress and not explicitly restarting, don't wipe!
     if not restart and state.get("unit_id") == unit_id and state.get("lesson_index") is not None and state.get("lesson_index", 0) > 0:
-        state["phase"] = "lesson"
-        set_state(wa_id, state)
-        db.log_activity(wa_id, "course_resumed", f"Resumed {unit_id} at Lesson {(state.get('lesson_index', 0) + 1)}")
-        return state
+        if state.get("lesson_index", 0) < len(lesson_ids):
+            state["phase"] = "lesson"
+            set_state(wa_id, state)
+            db.log_activity(wa_id, "course_resumed", f"Resumed {unit_id} at Lesson {(state.get('lesson_index', 0) + 1)}")
+            return state
+        else:
+            state["phase"] = "complete"
+            set_state(wa_id, state)
+            return state
 
     state.update({
         "phase": "lesson",
@@ -178,9 +208,15 @@ def advance_past_lesson(wa_id: str):
 
 def enter_tutor(wa_id: str, lesson_id: str = None) -> dict:
     state = get_state(wa_id)
-    resume = state.get("phase", "idle")
-    if resume not in ("lesson", "quiz"):
+    curr_phase = state.get("phase", "idle")
+    # Preserve complete phase so returning from tutor does not drop completion status
+    if is_course_complete(state) or curr_phase == "complete":
+        resume = "complete"
+    elif curr_phase in ("lesson", "quiz"):
+        resume = curr_phase
+    else:
         resume = "idle"
+
     state.update({
         "phase": "tutor",
         "tutor_resume": resume,
@@ -194,6 +230,8 @@ def enter_tutor(wa_id: str, lesson_id: str = None) -> dict:
 def exit_tutor(wa_id: str) -> str:
     state = get_state(wa_id)
     resume = state.get("tutor_resume", "idle")
+    if is_course_complete(state):
+        resume = "complete"
     state.update({
         "phase": resume,
         "tutor_resume": None,

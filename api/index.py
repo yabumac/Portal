@@ -432,6 +432,18 @@ async def handle_button_click(wa_id: str, button_id: str) -> None:
 
     if button_id in (ENROLL, RESUME):
         cur = state.get_state(wa_id)
+
+        # If already completed all modules, inform learner and do not loop on continue!
+        if state.is_course_complete(cur):
+            await whatsapp.send_text(
+                wa_id,
+                "You have already finished all 7 modules of this course! Excellent work.\n\n"
+                "There are no further modules to continue. You can ask the AI Tutor questions "
+                "or review and restart the course below:",
+            )
+            await send_menu(wa_id, fresh=False)
+            return
+
         lesson_idx = cur.get("lesson_index", 0)
         completed = cur.get("completed_lessons") or []
 
@@ -440,7 +452,7 @@ async def handle_button_click(wa_id: str, button_id: str) -> None:
             cur.get("phase") in ("lesson", "quiz", "tutor", "assessment")
             or (lesson_idx is not None and lesson_idx > 0)
             or len(completed) > 0
-        ) and cur.get("phase") != "complete"
+        )
 
         if has_progress:
             # Resume existing course
@@ -448,8 +460,10 @@ async def handle_button_click(wa_id: str, button_id: str) -> None:
             lesson = state.current_lesson(state.get_state(wa_id))
             if cur.get("phase") == "quiz":
                 await send_quiz(wa_id)
-            else:
+            elif lesson:
                 await deliver_lesson(wa_id, lesson)
+            else:
+                await recover_or_start(wa_id)
             return
 
         # Start fresh
@@ -517,16 +531,28 @@ async def send_menu(wa_id: str, fresh: bool = True) -> None:
     phase = cur.get("phase")
     lesson_idx = cur.get("lesson_index", 0)
     completed = cur.get("completed_lessons") or []
+    is_completed = state.is_course_complete(cur)
 
-    # Check if user has active or existing progress in the course
+    # Check if user has active or existing progress in the course (and not finished)
     has_progress = (
-        phase in ("lesson", "quiz", "tutor", "assessment")
-        or (lesson_idx is not None and lesson_idx > 0)
-        or len(completed) > 0
-    ) and phase != "complete"
+        not is_completed
+        and (
+            phase in ("lesson", "quiz", "tutor", "assessment")
+            or (lesson_idx is not None and lesson_idx > 0)
+            or len(completed) > 0
+        )
+    )
 
     if fresh:
-        if has_progress:
+        if is_completed:
+            await whatsapp.send_text(
+                wa_id,
+                "Welcome back to EdTech Hub.\n\n"
+                "You have already finished all 7 modules of the course! Congratulations.\n\n"
+                "There are no further modules to continue. You can ask the AI Tutor questions, "
+                "or review and restart the modules below:",
+            )
+        elif has_progress:
             lesson = state.current_lesson(cur)
             lesson_title = lesson["title"] if lesson else f"Module {(lesson_idx or 0) + 1}"
             total_mods = curriculum.total_lessons(cur.get("unit_id") or curriculum.DEFAULT_UNIT_ID) or 7
@@ -566,19 +592,27 @@ async def send_menu(wa_id: str, fresh: bool = True) -> None:
             await whatsapp.send_text(wa_id, curriculum.BOT_INTRO)
             await asyncio.sleep(0.3)
     else:
-        await whatsapp.send_text(wa_id, "Main menu:")
+        if is_completed:
+            await whatsapp.send_text(
+                wa_id,
+                "Course Completed:\n\n"
+                "You have finished all 7 modules. There are no further modules to continue. "
+                "You can ask the AI Tutor questions or review/restart the course below:",
+            )
+        else:
+            await whatsapp.send_text(wa_id, "Main menu:")
 
-    if has_progress:
+    if is_completed:
+        buttons = [
+            {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
+            {"id": RESTART, "title": "Review / Restart"},
+            {"id": ASSESS, "title": "Take Survey"},
+        ]
+    elif has_progress:
         buttons = [
             {"id": RESUME, "title": "Continue Course"},
             {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
             {"id": RESTART, "title": "Restart Course"},
-        ]
-    elif phase == "complete":
-        buttons = [
-            {"id": RESTART, "title": "Review / Restart"},
-            {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
-            {"id": ASSESS, "title": "Take Survey"},
         ]
     else:
         buttons = [
@@ -747,11 +781,13 @@ async def enter_tutor_flow(wa_id: str) -> None:
     lesson = state.current_lesson(cur)
     lesson_id = lesson["id"] if lesson else None
     context_label = lesson["title"] if lesson else "Module 1: AI Basics and The Teacher as Editor"
+    is_completed = state.is_course_complete(cur)
 
     state.enter_tutor(wa_id, lesson_id=lesson_id)
 
     buttons = [{"id": EXIT_TUTOR, "title": "Exit Tutor"}]
-    if cur.get("unit_id") or cur.get("tutor_resume"):
+    # Only offer "Continue Course" if the user has NOT finished all modules
+    if not is_completed and (cur.get("unit_id") or cur.get("tutor_resume")):
         buttons.append({"id": TUTOR_RESUME, "title": "Continue Course"})
 
     await whatsapp.send_text(
@@ -771,6 +807,7 @@ async def tutor_chat(wa_id: str, question: str) -> None:
     lesson = state.current_lesson(cur)
     lesson_id = cur.get("tutor_lesson") or (lesson["id"] if lesson else None)
     lesson_title = lesson["title"] if lesson else f"Module {(cur.get('lesson_index') or 0) + 1}"
+    is_completed = state.is_course_complete(cur)
 
     section = curriculum.lesson_as_context(unit_id, lesson_id) if unit_id and lesson_id else ""
 
@@ -779,7 +816,8 @@ async def tutor_chat(wa_id: str, question: str) -> None:
     await whatsapp.send_text(wa_id, answer)
 
     buttons = [{"id": EXIT_TUTOR, "title": "Exit Tutor"}]
-    if unit_id:
+    # Only offer "Continue Course" if the user has NOT finished all modules
+    if not is_completed and unit_id:
         buttons.append({"id": TUTOR_RESUME, "title": "Continue Course"})
 
     await whatsapp.send_buttons(
@@ -819,6 +857,12 @@ async def exit_tutor_flow(wa_id: str) -> None:
 
 
 async def resume_from_tutor(wa_id: str) -> None:
+    cur = state.get_state(wa_id)
+    if state.is_course_complete(cur):
+        await whatsapp.send_text(
+            wa_id,
+            "You have completed all 7 modules of this course! Returning to the main menu.",
+        )
     await exit_tutor_flow(wa_id)
 
 
@@ -918,10 +962,12 @@ async def handle_ai_fallback(wa_id: str, question: str) -> None:
 async def recover_or_start(wa_id: str) -> None:
     """Seamlessly load user progress from database without resetting."""
     cur = state.get_state(wa_id)
-    if cur.get("phase") == "complete":
+    if state.is_course_complete(cur):
         await whatsapp.send_text(
             wa_id,
-            "You have already completed the course! Type 'hi' to review or ask questions.",
+            "You have already finished all 7 modules of the course! Congratulations.\n\n"
+            "There are no further modules to continue. You can ask the AI Tutor questions, "
+            "or review and restart the course below:",
         )
         await send_menu(wa_id, fresh=False)
         return
