@@ -135,6 +135,18 @@ def get_public_media_url(filename_or_path: str) -> str:
     return f"{host.rstrip('/')}/{clean}"
 
 
+@app.get("/api/debug-path")
+@app.get("/debug-path")
+async def debug_path(request: Request):
+    return {
+        "url_path": request.url.path,
+        "query_params": dict(request.query_params),
+        "headers": {k: v for k, v in request.headers.items() if not k.lower().startswith("cookie")},
+        "scope_path": request.scope.get("path"),
+        "scope_root_path": request.scope.get("root_path"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Health checks
 # ---------------------------------------------------------------------------
