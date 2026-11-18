@@ -406,13 +406,14 @@ def clean_ai_output(t: str, fallback_fn=None) -> str:
     return t
 
 
-async def _answer_rest(question: str, section: str, module_title: str) -> str:
+async def _call_gemini_fast(question: str, section: str, module_title: str) -> Optional[str]:
     """
-    Direct REST call to Gemini API with dynamic model discovery and clean fallback.
+    Direct, lightweight async REST call to Gemini with tight per-request timeouts.
+    Never blocks threads, never performs slow discovery.
     """
     api_key = _get_gemini_api_key()
     if not api_key:
-        return answer_pedagogy_kb(question, section, module_title)
+        return None
 
     system_inst = _build_system_instruction(section, module_title)
 
@@ -427,8 +428,8 @@ async def _answer_rest(question: str, section: str, module_title: str) -> str:
             }
         ],
         "generationConfig": {
-            "temperature": 0.4,
-            "maxOutputTokens": _MAX_OUTPUT_TOKENS,
+            "temperature": 0.3,
+            "maxOutputTokens": 320,
         }
     }
 
@@ -446,159 +447,68 @@ async def _answer_rest(question: str, section: str, module_title: str) -> str:
             }
         ],
         "generationConfig": {
-            "temperature": 0.4,
-            "maxOutputTokens": _MAX_OUTPUT_TOKENS,
+            "temperature": 0.3,
+            "maxOutputTokens": 320,
         }
     }
 
-    last_error = ""
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        # Dynamically discover active models for this key
-        discovered = await _discover_models(client, api_key)
-        preferred_model = os.getenv("GEMINI_MODEL") or DEFAULT_MODEL
-        
-        # Build prioritized list of model names
-        models_to_try = []
-        if preferred_model in discovered:
-            models_to_try.append(preferred_model)
-        for m in discovered:
-            if m not in models_to_try:
-                models_to_try.append(m)
-        for m in FALLBACK_MODELS:
-            if m not in models_to_try:
-                models_to_try.append(m)
+    candidate_models = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-flash-lite"]
+    preferred = os.getenv("GEMINI_MODEL")
+    if preferred and preferred not in candidate_models:
+        candidate_models.insert(0, preferred)
 
-        for model_name in models_to_try[:5]:
-            for api_version in ("v1beta", "v1"):
-                url = f"https://generativelanguage.googleapis.com/{api_version}/models/{model_name}:generateContent?key={api_key}"
-                for payload in (payload_primary, payload_clean_inlined):
-                    try:
-                        resp = await client.post(url, json=payload)
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            candidates = data.get("candidates", [])
-                            if candidates:
-                                parts = candidates[0].get("content", {}).get("parts", [])
-                                valid_parts = []
-                                for p in parts:
-                                    # Never include thought / internal reasoning parts
-                                    if p.get("thought") is True:
-                                        continue
-                                    txt = p.get("text", "").strip()
-                                    if txt:
-                                        valid_parts.append(txt)
-
-                                raw_text = "\n".join(valid_parts).strip() if valid_parts else (parts[-1].get("text", "").strip() if parts else "")
-                                text = clean_ai_output(raw_text, fallback_fn=lambda: answer_pedagogy_kb(question, section, module_title))
-                                if text:
-                                    return text
-                        else:
-                            last_error = f"{model_name} ({api_version}) HTTP {resp.status_code}: {resp.text[:120]}"
-                    except Exception as e:
-                        last_error = f"{model_name} ({api_version}) err: {e}"
-
-    if last_error:
-        logger.warning("Gemini REST attempts failed: %s", last_error)
-        try:
-            from bot import db
-            db.log_activity("system", "gemini_api_error", last_error)
-        except Exception:
-            pass
-
-    # Seamless knowledge-base fallback guarantees 100% answer delivery
-    logger.info("Using pedagogical knowledge-base engine for question: %s", question[:60])
-    return answer_pedagogy_kb(question, section, module_title)
-
-
-def _answer_sync(question: str, section: str, module_title: str) -> str:
-    """Synchronous Gemini SDK call with model fallback."""
-    api_key = _get_gemini_api_key()
-    if not api_key:
-        return answer_pedagogy_kb(question, section, module_title)
-
-    if not genai:
-        raise RuntimeError("genai library not available")
-
-    genai.configure(api_key=api_key)
-    system_inst = _build_system_instruction(section, module_title)
-
-    preferred_model = os.getenv("GEMINI_MODEL") or DEFAULT_MODEL
-    models_to_try = [preferred_model] + [m for m in FALLBACK_MODELS if m != preferred_model]
-
-    for model_name in models_to_try:
-        try:
-            try:
-                model = genai.GenerativeModel(
-                    model_name,
-                    system_instruction=system_inst,
-                    generation_config=genai.types.GenerationConfig(
-                        temperature=0.4,
-                        max_output_tokens=_MAX_OUTPUT_TOKENS,
-                    ),
-                )
-                response = model.generate_content(question)
-            except (TypeError, ValueError):
-                model = genai.GenerativeModel(
-                    model_name,
-                    generation_config=genai.types.GenerationConfig(
-                        temperature=0.4,
-                        max_output_tokens=_MAX_OUTPUT_TOKENS,
-                    ),
-                )
-                inlined_prompt = (
-                    f"You are a helpful WhatsApp AI tutor for Ethiopian educators on {module_title}.\n"
-                    f"Teacher's question: {question}\n\n"
-                    "Please answer directly in exactly 1 short paragraph plus 2-3 bullet points (* ) for practical classroom application."
-                )
-                response = model.generate_content(inlined_prompt)
-
-            raw_text = ""
-            try:
-                if hasattr(response, "candidates") and response.candidates:
-                    parts = response.candidates[0].content.parts
-                    text_parts = [p.text for p in parts if hasattr(p, "text") and not getattr(p, "thought", False)]
-                    raw_text = "\n".join(text_parts).strip()
-            except Exception:
-                pass
-            if not raw_text:
+    # 3.8s HTTP timeout per request
+    async with httpx.AsyncClient(timeout=3.8) as client:
+        for model_name in candidate_models[:2]:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+            for payload in (payload_primary, payload_clean_inlined):
                 try:
-                    raw_text = (response.text or "").strip()
-                except Exception:
-                    raw_text = ""
+                    resp = await client.post(url, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        candidates = data.get("candidates", [])
+                        if candidates:
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            valid_parts = [
+                                p.get("text", "").strip()
+                                for p in parts
+                                if p.get("text") and not p.get("thought", False)
+                            ]
+                            raw_text = "\n".join(valid_parts).strip() if valid_parts else (parts[-1].get("text", "").strip() if parts else "")
+                            cleaned = clean_ai_output(raw_text, fallback_fn=None)
+                            if cleaned:
+                                return cleaned
+                    else:
+                        logger.debug("Fast REST %s HTTP %s: %s", model_name, resp.status_code, resp.text[:100])
+                except Exception as req_err:
+                    logger.debug("Fast REST %s error: %s", model_name, req_err)
+                    break
 
-            text = clean_ai_output(raw_text, fallback_fn=lambda: answer_pedagogy_kb(question, section, module_title))
-            if text:
-                return text
-        except Exception as err:
-            logger.warning("Gemini SDK model %s failed: %s", model_name, err)
-
-    raise RuntimeError("All Gemini SDK models failed")
+    return None
 
 
 async def answer_question(question: str, section: str = "", module_title: str = "") -> str:
     """
     Answer a user's free-text question with module awareness and systematic guardrails.
-    Never crashes, never leaves the teacher stranded.
+    Guaranteed to return in <= 4.5 seconds. Never hangs, never crashes, never leaves
+    the teacher stranded.
     """
     api_key = _get_gemini_api_key()
-    if not api_key:
-        logger.warning("GEMINI_API_KEY is not set, using pedagogical knowledge engine")
-        return answer_pedagogy_kb(question, section, module_title)
+    if api_key:
+        try:
+            # Enforce 4.5s hard ceiling so Vercel & WhatsApp never time out
+            result = await asyncio.wait_for(
+                _call_gemini_fast(question, section, module_title),
+                timeout=4.5
+            )
+            if result:
+                return result
+        except asyncio.TimeoutError:
+            logger.warning("Gemini API exceeded 4.5s; immediately delivering curated pedagogical KB")
+        except Exception as e:
+            logger.warning("Gemini call exception: %s", e)
 
-    # 1. Try SDK if available
-    try:
-        if genai is not None:
-            return await asyncio.to_thread(_answer_sync, question, section, module_title)
-    except Exception as sdk_err:
-        logger.debug("Gemini SDK attempt failed: %s. Falling back to REST.", sdk_err)
-
-    # 2. Try REST with dynamic discovery
-    try:
-        return await _answer_rest(question, section, module_title)
-    except Exception as rest_err:
-        logger.warning("Gemini REST attempt also failed: %s", rest_err)
-
-    # 3. Guaranteed pedagogical knowledge-base engine fallback
+    # Seamless instant pedagogical knowledge base fallback (0.001s)
     return answer_pedagogy_kb(question, section, module_title)
 
 
