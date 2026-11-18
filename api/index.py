@@ -135,16 +135,15 @@ def get_public_media_url(filename_or_path: str) -> str:
     return f"{host.rstrip('/')}/{clean}"
 
 
-@app.get("/api/debug-path")
-@app.get("/debug-path")
-async def debug_path(request: Request):
-    return {
-        "url_path": request.url.path,
-        "query_params": dict(request.query_params),
-        "headers": {k: v for k, v in request.headers.items() if not k.lower().startswith("cookie")},
-        "scope_path": request.scope.get("path"),
-        "scope_root_path": request.scope.get("root_path"),
-    }
+def get_clean_request_path(request: Request, path: str = "") -> str:
+    """Extract clean request path even behind Vercel serverless rewrites."""
+    raw = request.query_params.get("__path__") or path or request.url.path or ""
+    clean = raw.strip("/").lower()
+    if clean.startswith("api/index.py"):
+        clean = clean[len("api/index.py"):].strip("/")
+    elif clean.startswith("index.py"):
+        clean = clean[len("index.py"):].strip("/")
+    return clean
 
 
 # ---------------------------------------------------------------------------
@@ -163,33 +162,33 @@ async def health_check(request: Request):
         logger.info("Webhook verified at root (%s)", mode)
         return Response(content=challenge, media_type="text/plain")
 
-    # If Vercel rewrote an admin or dashboard request to /api
+    clean_path = get_clean_request_path(request)
     raw_path = (
         request.headers.get("x-matched-path")
         or request.headers.get("x-invoke-path")
         or request.headers.get("x-forwarded-uri")
         or request.headers.get("x-real-path")
         or request.headers.get("x-original-url")
-        or ""
+        or clean_path
     ).lower()
 
-    if "export/csv" in raw_path or "export" in raw_path:
+    if clean_path in ("admin/export/csv", "export/csv") or clean_path.endswith("export/csv") or "export/csv" in raw_path:
         from api.admin import export_users_csv
         return await export_users_csv(request)
 
-    if "admin/login" in raw_path or raw_path.endswith("/login"):
+    if clean_path.startswith("admin/login") or clean_path == "login":
         from api.admin import login_page
         return await login_page()
 
-    if "admin/api/analytics" in raw_path or "api/analytics" in raw_path:
+    if clean_path in ("admin/api/analytics", "api/admin/analytics", "api/analytics"):
         from api.admin import get_analytics_json
         return await get_analytics_json(request)
 
-    if "admin/api/test-gemini" in raw_path or "api/test-gemini" in raw_path:
+    if clean_path in ("admin/api/test-gemini", "api/admin/test-gemini", "api/test-gemini"):
         from api.admin import test_gemini_endpoint
         return await test_gemini_endpoint(request)
 
-    if "admin" in raw_path or "dashboard" in raw_path or params.get("password") or params.get("pass"):
+    if clean_path in ("admin", "dashboard", "admin/dashboard", "api/admin", "api/dashboard") or clean_path.startswith("admin/") or "admin" in raw_path or "dashboard" in raw_path or params.get("password") or params.get("pass"):
         from api.admin import admin_dashboard
         return await admin_dashboard(request)
 
@@ -241,7 +240,7 @@ async def webhook_verification(request: Request):
 @app.post("/api/index.py")
 @app.post("/{path:path}")
 async def handle_post(request: Request, path: str = ""):
-    clean_path = path.strip("/").lower()
+    clean_path = get_clean_request_path(request, path)
 
     # Route admin login POST
     if clean_path.startswith("admin/login") or clean_path == "login":
@@ -285,19 +284,17 @@ async def catch_all_get(request: Request, path: str = ""):
     if mode == "subscribe" and token == VERIFY_TOKEN:
         return Response(content=challenge, media_type="text/plain")
 
+    clean_path = get_clean_request_path(request, path)
     raw_path = (
         request.headers.get("x-matched-path")
         or request.headers.get("x-invoke-path")
         or request.headers.get("x-forwarded-uri")
         or request.headers.get("x-real-path")
         or request.headers.get("x-original-url")
-        or path
-        or ""
+        or clean_path
     ).lower()
 
-    clean_path = path.strip("/").lower()
-
-    if "export/csv" in raw_path or "export/csv" in clean_path or "export" in raw_path or clean_path in ("admin/export/csv", "export/csv"):
+    if clean_path in ("admin/export/csv", "export/csv") or clean_path.endswith("export/csv") or "export/csv" in raw_path:
         from api.admin import export_users_csv
         return await export_users_csv(request)
 
@@ -340,25 +337,10 @@ async def catch_all_get(request: Request, path: str = ""):
                 media_type = "video/mp4" if filename.endswith(".mp4") else ("image/png" if filename.endswith(".png") else "application/octet-stream")
                 return FileResponse(candidate, media_type=media_type)
 
-    if clean_path in ("api/debug-path", "debug-path") or "debug-path" in raw_path:
-        return {
-            "url_path": request.url.path,
-            "path_arg": path,
-            "query_params": dict(request.query_params),
-            "headers": {k: v for k, v in request.headers.items() if not k.lower().startswith("cookie")},
-            "scope_path": request.scope.get("path"),
-            "scope_root_path": request.scope.get("root_path"),
-        }
-
-    return {
-        "status": "ok",
-        "message": "WhatsApp Learning Bot running",
-        "debug_clean_path": clean_path,
-        "debug_raw_path": raw_path,
-        "debug_headers": {k: v for k, v in request.headers.items() if not k.lower().startswith("cookie")},
-        "debug_url": str(request.url),
-        "debug_scope": {k: str(v) for k, v in request.scope.items() if k in ("path", "root_path", "raw_path", "query_string")},
-    }
+    return Response(
+        content='{"status": "ok", "message": "WhatsApp Learning Bot running"}',
+        media_type="application/json",
+    )
 
 
 # ---------------------------------------------------------------------------
