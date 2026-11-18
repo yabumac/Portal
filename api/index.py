@@ -67,7 +67,7 @@ LESSON_GO = {"ready", "continue", "next", "quiz", "go", "resume"}
 
 # --- Admin dashboard routes ---------------------------------------------------
 try:
-    from api.admin import router as admin_router, admin_dashboard
+    from api.admin import router as admin_router, admin_dashboard, export_users_csv
     app.include_router(admin_router, prefix="/admin", tags=["admin"])
     app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
 
@@ -80,6 +80,15 @@ try:
     @app.get("/api/dashboard", response_class=HTMLResponse)
     async def dashboard_view(request: Request):
         return await admin_dashboard(request)
+
+    @app.get("/admin/export/csv")
+    @app.get("/admin/export/csv/")
+    @app.get("/api/admin/export/csv")
+    @app.get("/api/admin/export/csv/")
+    @app.get("/export/csv")
+    @app.get("/export/csv/")
+    async def export_csv_view(request: Request):
+        return await export_users_csv(request)
 
     @app.get("/media/logo.png")
     @app.get("/logo.png")
@@ -147,8 +156,14 @@ async def health_check(request: Request):
         request.headers.get("x-matched-path")
         or request.headers.get("x-invoke-path")
         or request.headers.get("x-forwarded-uri")
+        or request.headers.get("x-real-path")
+        or request.headers.get("x-original-url")
         or ""
     ).lower()
+
+    if "export/csv" in raw_path or "export" in raw_path:
+        from api.admin import export_users_csv
+        return await export_users_csv(request)
 
     if "admin/login" in raw_path or raw_path.endswith("/login"):
         from api.admin import login_page
@@ -258,24 +273,42 @@ async def catch_all_get(request: Request, path: str = ""):
     if mode == "subscribe" and token == VERIFY_TOKEN:
         return Response(content=challenge, media_type="text/plain")
 
+    raw_path = (
+        request.headers.get("x-matched-path")
+        or request.headers.get("x-invoke-path")
+        or request.headers.get("x-forwarded-uri")
+        or request.headers.get("x-real-path")
+        or request.headers.get("x-original-url")
+        or path
+        or ""
+    ).lower()
+
     clean_path = path.strip("/").lower()
-    if clean_path.startswith("admin/login") or clean_path == "login":
-        from api.admin import login_page
-        return await login_page()
 
-    if clean_path in ("admin/api/analytics", "api/admin/analytics", "api/analytics"):
-        from api.admin import get_analytics_json
-        return await get_analytics_json(request)
-
-    if clean_path in ("admin/api/test-gemini", "api/admin/test-gemini", "api/test-gemini"):
-        from api.admin import test_gemini_endpoint
-        return await test_gemini_endpoint(request)
-
-    if clean_path in ("admin/export/csv", "export/csv"):
+    if "export/csv" in raw_path or "export/csv" in clean_path or "export" in raw_path or clean_path in ("admin/export/csv", "export/csv"):
         from api.admin import export_users_csv
         return await export_users_csv(request)
 
-    if clean_path in ("admin", "dashboard", "admin/dashboard", "api/admin", "api/dashboard") or clean_path.startswith("admin/") or params.get("password") or params.get("pass"):
+    if clean_path.startswith("admin/login") or clean_path == "login" or "admin/login" in raw_path:
+        from api.admin import login_page
+        return await login_page()
+
+    if any(k in raw_path or k in clean_path for k in ("admin/api/analytics", "api/admin/analytics", "api/analytics")):
+        from api.admin import get_analytics_json
+        return await get_analytics_json(request)
+
+    if any(k in raw_path or k in clean_path for k in ("admin/api/test-gemini", "api/admin/test-gemini", "api/test-gemini")):
+        from api.admin import test_gemini_endpoint
+        return await test_gemini_endpoint(request)
+
+    if (
+        clean_path in ("admin", "dashboard", "admin/dashboard", "api/admin", "api/dashboard")
+        or clean_path.startswith("admin/")
+        or "admin" in raw_path
+        or "dashboard" in raw_path
+        or params.get("password")
+        or params.get("pass")
+    ):
         from api.admin import admin_dashboard
         return await admin_dashboard(request)
 

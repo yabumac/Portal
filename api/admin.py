@@ -329,32 +329,148 @@ async def get_whatsapp_status(request: Request):
 @router.get("/export/csv")
 async def export_users_csv(request: Request):
     if not is_authenticated(request):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+        q_pass = request.query_params.get("password") or request.query_params.get("pass")
+        if q_pass and q_pass == ADMIN_PASSWORD:
+            pass
+        else:
+            return RedirectResponse(url="/admin/login")
+
     users = db.get_all_users()
+    from content import curriculum
+
+    # Survey mapping
+    assessment_map = {}
+    for item in getattr(curriculum, "ASSESSMENT", []):
+        assessment_map[item.get("id")] = {
+            "question": item.get("question", ""),
+            "options": item.get("options", {})
+        }
+
+    # Lessons mapping
+    lessons_list = curriculum.UNITS.get("unit_1", {}).get("lessons", [])
+
     output = io.StringIO()
+    output.write("\ufeff")  # UTF-8 BOM for Microsoft Excel compatibility
     writer = csv.writer(output)
-    writer.writerow([
-        "Phone Number (WhatsApp)", "Phase", "Unit ID", "Lesson Index", "Completed Modules Count",
-        "Assessment Answers", "Quiz Answers", "Created At (UTC)", "Last Seen (UTC)", "Total Interactions"
-    ])
+
+    # Detailed Header Row
+    headers = [
+        "Phone Number (WhatsApp)",
+        "Learner Status / Phase",
+        "Modules Completed Count",
+        "Progress (%)",
+        "Current Module Title",
+        "Self-Assessment Status",
+        "Assessment Q1: AI Usage",
+        "Assessment Q2: Classroom Confidence",
+        "Assessment Q3: Primary Constraint",
+        "Assessment Q4: Main Course Goal",
+        "Module 1 Quiz (AI Basics)",
+        "Module 2 Quiz (Prompt Formula)",
+        "Module 3 Quiz (Offline & Low-Resource)",
+        "Module 4 Quiz (Lesson Planning)",
+        "Module 5 Quiz (Formative Assessment)",
+        "Module 6 Quiz (Inclusive UDL)",
+        "Module 7 Quiz (Responsible AI)",
+        "Quiz Score Summary (Correct/Attempted)",
+        "Total Messages / Interactions",
+        "First Seen / Registered (UTC)",
+        "Last Active (UTC)",
+        "Raw Assessment Answers JSON",
+        "Raw Quiz Answers JSON",
+        "Completed Lessons Array"
+    ]
+    writer.writerow(headers)
+
     for phone, u in users.items():
-        writer.writerow([
+        phase = u.get("phase", "idle")
+        completed = u.get("completed_lessons") or []
+        comp_count = len(completed)
+        progress_pct = f"{round((comp_count / 7) * 100)}%"
+
+        # Current Module Title
+        lesson_idx = u.get("lesson_index", 0)
+        if comp_count >= 7:
+            curr_module_title = "Course Completed (All 7 Modules)"
+        elif lesson_idx is not None and 0 <= lesson_idx < len(lessons_list):
+            curr_module_title = lessons_list[lesson_idx].get("title", f"Module {lesson_idx + 1}")
+        else:
+            curr_module_title = f"Module {min(comp_count + 1, 7)}"
+
+        # Assessment Answers breakdown
+        assess = u.get("assessment_answers") or {}
+        has_assessment = bool(assess and any(k in assess for k in ("ai_use", "comfort", "challenge", "goal")))
+        assess_status = "Completed" if has_assessment else "Not Started"
+
+        q1_val = assess.get("ai_use", "")
+        q1_opt = assessment_map.get("ai_use", {}).get("options", {}).get(q1_val, "")
+        q1_text = f"{q1_val}: {q1_opt}" if q1_val else "Not answered"
+
+        q2_val = assess.get("comfort", "")
+        q2_opt = assessment_map.get("comfort", {}).get("options", {}).get(q2_val, "")
+        q2_text = f"{q2_val}: {q2_opt}" if q2_val else "Not answered"
+
+        q3_val = assess.get("challenge", "")
+        q3_opt = assessment_map.get("challenge", {}).get("options", {}).get(q3_val, "")
+        q3_text = f"{q3_val}: {q3_opt}" if q3_val else "Not answered"
+
+        q4_val = assess.get("goal", "")
+        q4_opt = assessment_map.get("goal", {}).get("options", {}).get(q4_val, "")
+        q4_text = f"{q4_val}: {q4_opt}" if q4_val else "Not answered"
+
+        # Quiz Answers breakdown (Module 1 through 7)
+        quizzes = u.get("quiz_answers") or {}
+        mod_quiz_cols = []
+        correct_count = 0
+        attempted_count = 0
+
+        for i in range(1, 8):
+            lid = f"lesson_{i}"
+            q_res = quizzes.get(lid)
+            if q_res:
+                attempted_count += 1
+                ans = q_res.get("answer", "")
+                is_corr = q_res.get("correct", False)
+                if is_corr:
+                    correct_count += 1
+                    mod_quiz_cols.append(f"{ans} (Correct)")
+                else:
+                    mod_quiz_cols.append(f"{ans} (Incorrect)")
+            else:
+                mod_quiz_cols.append("Not attempted")
+
+        quiz_summary_str = f"{correct_count}/{attempted_count} correct" if attempted_count > 0 else "0/0 attempted"
+
+        row = [
             phone,
-            u.get("phase", "idle"),
-            u.get("unit_id", ""),
-            u.get("lesson_index", ""),
-            len(u.get("completed_lessons") or []),
-            json.dumps(u.get("assessment_answers") or {}),
-            json.dumps(u.get("quiz_answers") or {}),
+            phase,
+            f"{comp_count} / 7",
+            progress_pct,
+            curr_module_title,
+            assess_status,
+            q1_text,
+            q2_text,
+            q3_text,
+            q4_text,
+            *mod_quiz_cols,
+            quiz_summary_str,
+            u.get("total_messages", 0),
             u.get("created_at", ""),
             u.get("last_seen", ""),
-            u.get("total_messages", 0),
-        ])
+            json.dumps(assess, ensure_ascii=False),
+            json.dumps(quizzes, ensure_ascii=False),
+            json.dumps(completed, ensure_ascii=False),
+        ]
+        writer.writerow(row)
+
     output.seek(0)
     return Response(
         content=output.getvalue(),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=edtech_learners_report.csv"}
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": "attachment; filename=edtech_learners_report.csv",
+            "Content-Type": "text/csv; charset=utf-8"
+        }
     )
 
 
@@ -508,8 +624,6 @@ async def admin_dashboard(request: Request):
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
-    <!-- Chart.js 4.4.1 -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <style>
         :root {{
             --primary: #1d4ed8;
@@ -1146,7 +1260,7 @@ async def admin_dashboard(request: Request):
                 <svg id="refreshIcon" style="width:14px;height:14px;display:inline-block;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
                 <span>Refresh</span>
             </button>
-            <a href="/admin/export/csv" class="btn" title="Download all learner records as CSV">
+            <a id="btnExportCsv" href="/admin/export/csv" class="btn" title="Download all learner records as CSV">
                 <span>Export CSV</span>
             </a>
             <a href="/admin/logout" class="btn" title="Sign out from dashboard">
@@ -1280,72 +1394,6 @@ async def admin_dashboard(request: Request):
             </div>
         </div>
 
-        <!-- Charts Row 1: Donut Charts -->
-        <div class="charts-row-2col">
-            <!-- Donut Chart 1: Learner Status Breakdown -->
-            <div class="chart-card">
-                <div class="chart-card-header">
-                    <div class="chart-title-wrap">
-                        <div>
-                            <h2 class="chart-card-title">Learner Status Distribution</h2>
-                            <p class="chart-subtitle">Real-time breakdown of current learner progress stages</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="canvas-container">
-                    <canvas id="statusDonutChart"></canvas>
-                </div>
-            </div>
-
-            <!-- Donut Chart 2: Time-of-Day Study Habits -->
-            <div class="chart-card">
-                <div class="chart-card-header">
-                    <div class="chart-title-wrap">
-                        <div>
-                            <h2 class="chart-card-title">When Are They Learning?</h2>
-                            <p class="chart-subtitle">Activity grouped by Morning, Afternoon, Evening, and Night</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="canvas-container">
-                    <canvas id="timeOfDayChart"></canvas>
-                </div>
-            </div>
-        </div>
-
-        <!-- Charts Row 2: 24-Hour Rhythm & 7-Module Funnel -->
-        <div class="charts-row-3col">
-            <!-- 24-Hour Activity Area Curve -->
-            <div class="chart-card">
-                <div class="chart-card-header">
-                    <div class="chart-title-wrap">
-                        <div>
-                            <h2 class="chart-card-title">24-Hour Activity Rhythm (UTC)</h2>
-                            <p class="chart-subtitle">Hourly volume of messages, quiz submissions, and AI queries</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="canvas-container" style="min-height: 260px;">
-                    <canvas id="hourlyActivityChart"></canvas>
-                </div>
-            </div>
-
-            <!-- 7-Module Progression Funnel -->
-            <div class="chart-card">
-                <div class="chart-card-header">
-                    <div class="chart-title-wrap">
-                        <div>
-                            <h2 class="chart-card-title">7-Module Progression Funnel</h2>
-                            <p class="chart-subtitle">Student progression through each curriculum module</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="canvas-container" style="min-height: 260px;">
-                    <canvas id="funnelBarChart"></canvas>
-                </div>
-            </div>
-        </div>
-
         <!-- AI Readiness Survey Section -->
         <div class="chart-card" style="margin-bottom: 28px;">
             <div class="chart-card-header">
@@ -1440,211 +1488,27 @@ async def admin_dashboard(request: Request):
     </script>
 
     <script>
-        // Global Chart Instances
-        let statusChart = null;
-        let todChart = null;
-        let hourlyChart = null;
-        let funnelChart = null;
         let currentFilter = 'all';
 
         // Load initial data from server
         let dashboardData = JSON.parse(document.getElementById('initialData').textContent);
 
         document.addEventListener('DOMContentLoaded', () => {{
-            renderAllCharts(dashboardData);
             renderSurveyCards(dashboardData.assessment_insights);
+
+            // Ensure CSV export link carries current password parameter if present in URL
+            const urlParams = new URLSearchParams(window.location.search);
+            const adminPass = urlParams.get('password') || urlParams.get('pass');
+            const exportBtn = document.getElementById('btnExportCsv');
+            if (exportBtn && adminPass) {{
+                exportBtn.href = `/admin/export/csv?password=${{encodeURIComponent(adminPass)}}`;
+            }}
 
             // Auto-sync polling every 30 seconds
             setInterval(() => {{
                 refreshDashboardData(true);
             }}, 30000);
         }});
-
-        function renderAllCharts(data) {{
-            // 1. Donut Chart: Learner Status Distribution
-            const statusCtx = document.getElementById('statusDonutChart').getContext('2d');
-            const statusData = data.status_distribution || {{ labels: [], counts: [] }};
-            const hasStatusData = statusData.counts && statusData.counts.some(c => c > 0);
-
-            if (statusChart) statusChart.destroy();
-            statusChart = new Chart(statusCtx, {{
-                type: 'doughnut',
-                data: {{
-                    labels: statusData.labels,
-                    datasets: [{{
-                        data: hasStatusData ? statusData.counts : [1],
-                        backgroundColor: hasStatusData
-                            ? ['#10b981', '#2563eb', '#f59e0b', '#8b5cf6', '#ec4899', '#94a3b8']
-                            : ['#e2e8f0'],
-                        borderWidth: 2,
-                        borderColor: '#ffffff',
-                        hoverOffset: 4
-                    }}]
-                }},
-                options: {{
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    cutout: '65%',
-                    plugins: {{
-                        legend: {{
-                            position: 'bottom',
-                            labels: {{
-                                boxWidth: 12,
-                                padding: 14,
-                                font: {{ family: 'Inter', size: 11, weight: '600' }}
-                            }}
-                        }},
-                        tooltip: {{
-                            enabled: hasStatusData,
-                            callbacks: {{
-                                label: (ctx) => ` ${{ctx.label}}: ${{ctx.raw}} learners`
-                            }}
-                        }}
-                    }}
-                }}
-            }});
-
-            // 2. Donut Chart: Time of Day Habits
-            const todCtx = document.getElementById('timeOfDayChart').getContext('2d');
-            const todData = data.when_are_they_learning || {{}};
-            const todCounts = todData.time_of_day_counts || [0, 0, 0, 0];
-            const hasTodData = todCounts.some(c => c > 0);
-
-            if (todChart) todChart.destroy();
-            todChart = new Chart(todCtx, {{
-                type: 'doughnut',
-                data: {{
-                    labels: todData.time_of_day_labels || ['Morning', 'Afternoon', 'Evening', 'Night'],
-                    datasets: [{{
-                        data: hasTodData ? todCounts : [1],
-                        backgroundColor: hasTodData
-                            ? ['#38bdf8', '#f59e0b', '#6366f1', '#1e293b']
-                            : ['#e2e8f0'],
-                        borderWidth: 2,
-                        borderColor: '#ffffff',
-                        hoverOffset: 4
-                    }}]
-                }},
-                options: {{
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    cutout: '65%',
-                    plugins: {{
-                        legend: {{
-                            position: 'bottom',
-                            labels: {{
-                                boxWidth: 12,
-                                padding: 14,
-                                font: {{ family: 'Inter', size: 11, weight: '600' }}
-                            }}
-                        }},
-                        tooltip: {{
-                            enabled: hasTodData,
-                            callbacks: {{
-                                label: (ctx) => ` ${{ctx.label}}: ${{ctx.raw}} study events`
-                            }}
-                        }}
-                    }}
-                }}
-            }});
-
-            // 3. Smooth Area Chart: 24-Hour Activity (UTC)
-            const hourlyCtx = document.getElementById('hourlyActivityChart').getContext('2d');
-            const hourlyCounts = todData.hourly_counts || new Array(24).fill(0);
-            const hourlyLabels = todData.hourly_labels || Array.from({{length: 24}}, (_, i) => `${{i.toString().padStart(2, '0')}}:00`);
-
-            const gradient = hourlyCtx.createLinearGradient(0, 0, 0, 240);
-            gradient.addColorStop(0, 'rgba(37, 99, 235, 0.35)');
-            gradient.addColorStop(1, 'rgba(37, 99, 235, 0.01)');
-
-            if (hourlyChart) hourlyChart.destroy();
-            hourlyChart = new Chart(hourlyCtx, {{
-                type: 'line',
-                data: {{
-                    labels: hourlyLabels,
-                    datasets: [{{
-                        label: 'Study & Message Events',
-                        data: hourlyCounts,
-                        borderColor: '#2563eb',
-                        borderWidth: 2.5,
-                        backgroundColor: gradient,
-                        fill: true,
-                        tension: 0.4,
-                        pointRadius: 3,
-                        pointBackgroundColor: '#2563eb',
-                        pointHoverRadius: 6
-                    }}]
-                }},
-                options: {{
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {{
-                        y: {{
-                            beginAtZero: true,
-                            ticks: {{ precision: 0, font: {{ family: 'Inter', size: 11 }} }},
-                            grid: {{ color: '#f1f5f9' }}
-                        }},
-                        x: {{
-                            ticks: {{ font: {{ family: 'Inter', size: 10 }}, maxRotation: 0, autoSkip: true, maxTicksLimit: 12 }},
-                            grid: {{ display: false }}
-                        }}
-                    }},
-                    plugins: {{
-                        legend: {{ display: false }},
-                        tooltip: {{
-                            callbacks: {{
-                                title: (ctx) => `${{ctx[0].label}} UTC`,
-                                label: (ctx) => ` ${{ctx.raw}} interactions`
-                            }}
-                        }}
-                    }}
-                }}
-            }});
-
-            // 4. Bar Chart: 7-Module Progression Funnel
-            const funnelCtx = document.getElementById('funnelBarChart').getContext('2d');
-            const totalMods = data.progression_funnel ? data.progression_funnel.total_modules : 7;
-            const funnelCounts = data.progression_funnel ? data.progression_funnel.lesson_counts : new Array(totalMods).fill(0);
-            const funnelLabels = data.progression_funnel ? data.progression_funnel.labels : Array.from({{length: totalMods}}, (_, i) => `Mod ${{i+1}}`);
-
-            if (funnelChart) funnelChart.destroy();
-            funnelChart = new Chart(funnelCtx, {{
-                type: 'bar',
-                data: {{
-                    labels: funnelLabels,
-                    datasets: [{{
-                        label: 'Learners at Step',
-                        data: funnelCounts,
-                        backgroundColor: '#3b82f6',
-                        borderRadius: 6,
-                        hoverBackgroundColor: '#1d4ed8'
-                    }}]
-                }},
-                options: {{
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {{
-                        y: {{
-                            beginAtZero: true,
-                            ticks: {{ precision: 0, font: {{ family: 'Inter', size: 11 }} }},
-                            grid: {{ color: '#f1f5f9' }}
-                        }},
-                        x: {{
-                            ticks: {{ font: {{ family: 'Inter', size: 10 }} }},
-                            grid: {{ display: false }}
-                        }}
-                    }},
-                    plugins: {{
-                        legend: {{ display: false }},
-                        tooltip: {{
-                            callbacks: {{
-                                label: (ctx) => ` ${{ctx.raw}} active students`
-                            }}
-                        }}
-                    }}
-                }}
-            }});
-        }}
 
         function renderSurveyCards(insights) {{
             const grid = document.getElementById('surveyInsightsGrid');
@@ -1705,8 +1569,7 @@ async def admin_dashboard(request: Request):
                 document.getElementById('kpiPeakHour').innerText = sum.peak_hour_utc;
                 document.getElementById('tableCount').innerText = data.users.length;
 
-                // Update Charts
-                renderAllCharts(data);
+                // Update Survey Insights
                 renderSurveyCards(data.assessment_insights || data.survey_insights);
 
                 // Re-render Table
