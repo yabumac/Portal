@@ -350,10 +350,15 @@ async def catch_all_get(request: Request, path: str = ""):
             "scope_root_path": request.scope.get("root_path"),
         }
 
-    return Response(
-        content='{"status": "ok", "message": "WhatsApp Learning Bot running"}',
-        media_type="application/json",
-    )
+    return {
+        "status": "ok",
+        "message": "WhatsApp Learning Bot running",
+        "debug_clean_path": clean_path,
+        "debug_raw_path": raw_path,
+        "debug_headers": {k: v for k, v in request.headers.items() if not k.lower().startswith("cookie")},
+        "debug_url": str(request.url),
+        "debug_scope": {k: str(v) for k, v in request.scope.items() if k in ("path", "root_path", "raw_path", "query_string")},
+    }
 
 
 # ---------------------------------------------------------------------------
