@@ -31,17 +31,17 @@ from content import curriculum
 
 logger = logging.getLogger("whatsapp_bot")
 
-DEFAULT_MODEL = "gemini-1.5-flash"
+DEFAULT_MODEL = "gemini-2.5-flash"
 FALLBACK_MODELS = [
-    "gemini-1.5-flash",
-    "gemini-2.0-flash",
     "gemini-2.5-flash",
-    "gemini-1.5-pro",
-    "gemini-pro",
+    "gemini-flash-latest",
+    "gemini-2.5-flash-lite",
+    "gemini-flash-lite-latest",
+    "gemini-2.5-pro",
 ]
 
-_MAX_ANSWER_WORDS = 140
-_MAX_OUTPUT_TOKENS = 600
+_MAX_ANSWER_WORDS = 130
+_MAX_OUTPUT_TOKENS = 500
 
 # Cache discovered models for 10 minutes
 _DISCOVERED_MODELS_CACHE: list[str] = []
@@ -56,49 +56,30 @@ def _get_gemini_api_key() -> Optional[str]:
     return None
 
 
-def build_rag_context() -> str:
-    """Flatten all course content into a compact text reference for the model."""
-    lines = []
-    for unit in curriculum.UNITS.values():
-        lines.append(f"UNIT: {unit['id']} - {unit['title']}")
-        lines.append(f"Summary: {unit['summary']}")
-        for lesson in unit.get("lessons", []):
-            lines.append(f"MODULE: {lesson.get('title')}")
-            for paragraph in lesson.get("body", []):
-                lines.append(paragraph)
-        lines.append("")
-    return "\n".join(lines).strip()
-
-
 def _build_system_instruction(section: str = "", module_title: str = "") -> str:
     current_module_label = module_title.strip() if module_title else "AI for Teaching and Learning"
+    clean_context = section.strip() if section else "Practical Ethiopian classroom AI pedagogy"
 
-    return f"""You are the friendly, encouraging WhatsApp AI Pedagogical Tutor for Ethiopian educators taking the course: "AI for Teaching and Learning" by EdTech Hub.
+    return f"""You are the friendly, expert WhatsApp AI Pedagogical Tutor for Ethiopian educators taking the course: "AI for Teaching and Learning".
+You are conversing directly with a teacher via WhatsApp.
 
-You are conversing directly with an educator in WhatsApp chat.
-Write warm, concise, conversational replies (under 130 words) in plain text.
-Never use internal notes, planning outlines, bulleted checklists, or meta-talk. Never write "* Goal:", "* Domain:", "* Constraints:", or "* Draft:". Speak directly to the teacher as a helpful colleague.
-
-Teacher's Active Module:
+ACTIVE MODULE:
 {current_module_label}
 
-Lesson Content Context:
-{section if section else 'General Course Curriculum'}
+LESSON CONTEXT:
+{clean_context}
 
-Course Reference Syllabus:
-{build_rag_context()}
+CRITICAL RESPONSE FORMAT RULES:
+1. Output ONLY your direct conversational message to the teacher.
+2. Structure your reply in exactly three parts:
+   - Part 1: Exactly ONE concise introductory paragraph (2-3 sentences) directly explaining the core concept.
+   - Part 2: Exactly 2 or 3 bullet points (* ) providing practical, low-resource classroom strategies for Ethiopian schools (such as chalkboard delivery, large class sizes, or offline preparation).
+   - Part 3: Exactly ONE short, encouraging concluding sentence.
+3. Total word count must be under 125 words. Plain text only.
+4. Do NOT include planning notes, meta-talk, prompt reflections, or outlines. Start your response immediately with your direct explanation.
 
-Core Pedagogical Pillars:
-- Generative AI is a pattern-prediction assistant; the teacher is the essential editor and controller with final authority.
-- 5-Part Formula: Role, Context, Task, Constraints, Output Format.
-- Ethiopian context: large classes (50+ students), low connectivity, single-phone batch prep, chalkboard delivery.
-- Lesson planning: Objective, Hook, Direct Instruction, Guided Practice, Exit Ticket.
-- Formative assessment: Evidence to Action.
-- Universal Design for Learning (UDL): multiple means of access, tiered texts, bilingual glossaries.
-- Privacy: never input student names, grades, or personal details into AI.
-
-Off-Topic Guardrail:
-If the user asks questions unrelated to teaching or education (e.g., sports, celebrity gossip, software development unrelated to education, political debates, cryptocurrency, or entertainment):
+OFF-TOPIC GUARDRAIL:
+If the user asks questions completely unrelated to education or teaching (e.g., sports, celebrity gossip, politics, or entertainment):
 Politely reply:
 "I am your AI Tutor dedicated to the 'AI for Teaching and Learning' course. I can only assist with pedagogical strategies and your current module ({current_module_label}). Feel free to ask any question about this lesson or how to use AI in your classroom!"
 """
@@ -107,6 +88,89 @@ Politely reply:
 # ---------------------------------------------------------------------------
 # Solid Pedagogical Knowledge-Base Engine (Guaranteed Fallback & Workaround)
 # ---------------------------------------------------------------------------
+
+MODULE_CURATED_EXPLANATIONS = {
+    1: (
+        "In Module 1, we learn that Generative AI is a statistical pattern-prediction assistant rather than a conscious mind. "
+        "Because it predicts likely answers rather than understanding truth, the teacher must always serve as the final editor and pedagogical authority.\n\n"
+        "* The Teacher as Editor: Always review, adapt, and verify every AI draft against Ethiopian curriculum standards before sharing it with students.\n"
+        "* Practical Categories: Use text chatbots to draft lesson outlines, visual generators for chalkboard diagrams, and audio tools for pronunciation.\n"
+        "* Low-Resource Delivery: Generate ideas on your smartphone during connectivity periods, then write the finalized activities on the blackboard.\n\n"
+        "AI provides the initial draft, but your professional judgment creates meaningful learning."
+    ),
+    2: (
+        "In Module 2, we introduce the 5-Part Teacher Prompt Formula to transform generic AI responses into highly practical classroom resources. "
+        "Providing explicit structure prevents the AI from suggesting unrealistic activities or expensive digital tools.\n\n"
+        "* Core 5 Parts: Always specify Role (Grade 7 Science teacher), Context (55 students in Ethiopia), Task (15-minute group activity), Constraints (chalkboard only, local materials), and Output Format (numbered steps).\n"
+        "* Set Clear Boundaries: Specifying your exact class size and device limitations forces the AI to output practical, low-resource ideas.\n"
+        "* Reusable Templates: Save your best 5-part prompt structures on your phone to quickly draft future weekly lessons.\n\n"
+        "Clear teacher prompts produce relevant, classroom-ready materials."
+    ),
+    3: (
+        "In Module 3, we focus on practical teaching in low-connectivity, large-enrollment classrooms (50+ students). "
+        "You never need classroom internet or student devices—you apply the 'Batch Preparation' methodology.\n\n"
+        "* Batch Preparation: Use a single phone with internet at home or school to generate weekly quizzes, reading texts, and bilingual glossaries in advance.\n"
+        "* Chalkboard Delivery: Transcribe generated exercises, discussion prompts, or diagrams directly onto the blackboard for the whole class.\n"
+        "* Collaborative Stations: Organize small peer groups of 5-8 students sharing a single written prompt or task sheet.\n\n"
+        "Resource constraints never limit great teaching when you prepare strategically."
+    ),
+    4: (
+        "In Module 4, we walk through the 5-Step Lesson Planning Workflow designed for standard 40-45 minute periods. "
+        "AI serves as your rapid ideation assistant to create engaging, curriculum-aligned lesson structures.\n\n"
+        "* Hook & Objective: Prompt AI for a 5-minute curiosity-sparking local riddle or story to start the period with high energy.\n"
+        "* Direct & Guided Instruction: Use AI to draft tiered explanations, everyday analogies, and paired student practice tasks.\n"
+        "* Exit Ticket: Conclude the period with 2 diagnostic exit questions to check whether students achieved the core competency.\n\n"
+        "AI speeds up lesson planning so you can dedicate more energy to your students."
+    ),
+    5: (
+        "In Module 5, we explore Formative Assessment and the 'Evidence to Action' cycle. "
+        "Rather than focusing on grading, formative assessment provides real-time evidence of student understanding so you can adjust your teaching immediately.\n\n"
+        "* Diagnostic Questions: Ask AI to create multiple-choice exit tickets with plausible distractors that expose common misconceptions.\n"
+        "* Rapid Classroom Checks: Use thumbs-up/down signals, slate boards, or finger counts to quickly assess 50+ students at once.\n"
+        "* Targeted Re-Teaching: Prompt AI for alternative visual analogies or hands-on activities to re-explain topics that students found difficult.\n\n"
+        "Assessment becomes an ongoing compass to guide classroom learning."
+    ),
+    6: (
+        "In Module 6, we examine Universal Design for Learning (UDL) to support mixed-ability classrooms and diverse learners. "
+        "AI allows you to quickly differentiate instruction so every student can access the same core curriculum.\n\n"
+        "* Tiered Texts: Use AI to take a core reading passage and instantly generate simplified, standard, and enriched reading versions.\n"
+        "* Multiple Representations: Generate bilingual word banks (English and Amharic) and visual descriptions for complex vocabulary.\n"
+        "* Flexible Demonstration: Allow learners to show mastery through oral presentations, drawings, or chalkboard demonstrations.\n\n"
+        "Inclusion provides diverse pathways for every student to succeed."
+    ),
+    7: (
+        "In Module 7, we address Responsible AI, student data privacy, and ethical classroom stewardship. "
+        "Teachers play a vital role in ensuring AI is used safely, securely, and with cultural integrity.\n\n"
+        "* Data Privacy: Never enter student names, identification numbers, grades, or personal details into any AI system.\n"
+        "* Cultural Relevance: Review every generated example to verify it aligns with Ethiopian culture, geography, and values.\n"
+        "* Professional Leadership: Share your verified prompt templates and lesson plans with fellow teachers in your school.\n\n"
+        "Your ethical guidance ensures technology serves safe and meaningful educational progress."
+    ),
+}
+
+
+def get_module_number(module_title: str, section: str = "") -> int:
+    """Identify the 1-indexed module number from module title or section context."""
+    text = f"{module_title} {section}".lower()
+    for i in range(1, 8):
+        if f"module {i}" in text or f"lesson_{i}" in text or f"lesson {i}" in text:
+            return i
+    if "basics" in text or "editor" in text:
+        return 1
+    if "prompt" in text or "formula" in text:
+        return 2
+    if "offline" in text or "low-resource" in text or "ethiopian classroom" in text:
+        return 3
+    if "lesson planning" in text or "5-step" in text:
+        return 4
+    if "assessment" in text or "formative" in text or "evidence" in text:
+        return 5
+    if "udl" in text or "inclusive" in text or "differentiat" in text:
+        return 6
+    if "responsible" in text or "privacy" in text or "ethics" in text or "action plan" in text:
+        return 7
+    return 1
+
 
 def _is_off_topic(low_q: str) -> bool:
     """Detect clearly off-topic questions that violate course guardrails."""
@@ -126,10 +190,11 @@ def _is_off_topic(low_q: str) -> bool:
 def answer_pedagogy_kb(question: str, section: str = "", module_title: str = "") -> str:
     """
     Intelligent knowledge-base pedagogical responder.
-    Guarantees an accurate, structured, high-quality answer grounded in the course curriculum.
+    Guarantees an accurate, structured answer: 1 intro paragraph + 3 bullet points + 1 closing sentence.
     """
     low_q = question.lower().strip()
     active_module = module_title.strip() if module_title else "AI for Teaching and Learning"
+    mod_num = get_module_number(active_module, section)
 
     # Guardrail check
     if _is_off_topic(low_q):
@@ -139,98 +204,86 @@ def answer_pedagogy_kb(question: str, section: str = "", module_title: str = "")
             f"Feel free to ask any question about this lesson or how to use AI in your classroom!"
         )
 
-    # Topic 1: Teacher as Editor / Controller / Authority / Review
+    # Topic 1: Teacher as Editor / Controller / Review
     if any(k in low_q for k in ("controller", "control", "editor", "authority", "hallucinat", "fact check", "trust", "review")):
         return (
-            f"In {active_module}, the central principle is 'The Teacher as Editor and Controller.'\n\n"
+            f"In {active_module}, the central principle is 'The Teacher as Editor and Controller.' "
             "Generative AI does not possess pedagogical judgment or factual consciousness—it is a statistical prediction engine. "
-            "Therefore, the teacher remains the final controller of the classroom:\n"
-            "1. Review every AI draft against your national curriculum standards.\n"
-            "2. Verify facts, dates, and localized context before sharing.\n"
-            "3. Adjust the difficulty and vocabulary to match your learners.\n\n"
+            "Therefore, the educator must always review and adapt AI suggestions before using them in class.\n\n"
+            "* Align with Standards: Review every AI draft against your national curriculum standards to verify localized accuracy.\n"
+            "* Verify Facts & Context: Check all facts, numbers, and cultural references to ensure they fit Ethiopian classrooms.\n"
+            "* Differentiate for Learners: Adjust vocabulary and difficulty to match the actual reading levels of your students.\n\n"
             "AI serves as your preparation assistant, but you maintain full pedagogical authority."
         )
 
     # Topic 2: 5-Part Formula / Prompting
-    if any(k in low_q for k in ("prompt", "formula", "5-part", "5 part", "part", "how to prompt", "instruction", "output format")):
+    if any(k in low_q for k in ("prompt", "formula", "5-part", "5 part", "how to prompt", "instruction", "output format")):
         return (
-            "The 5-Part Prompt Formula ensures high-quality classroom outputs from AI:\n\n"
-            "1. Role: Who should AI act as? (e.g., 'Grade 7 General Science teacher')\n"
-            "2. Context: Who are your learners? (e.g., '55 students in a rural Ethiopian school')\n"
-            "3. Task: What should it create? (e.g., 'A 15-minute group discussion activity on plant cells')\n"
-            "4. Constraints: Classroom limitations (e.g., 'No devices, chalkboard only, local materials')\n"
-            "5. Output Format: Structure of response (e.g., 'Step-by-step numbered instructions').\n\n"
+            "The 5-Part Prompt Formula ensures AI generates relevant, practical classroom materials rather than generic textbook summaries. "
+            "By setting clear boundaries upfront, you save planning time and avoid unrealistic suggestions.\n\n"
+            "* Role & Context: State who the AI is acting as (e.g. Grade 8 General Science teacher) and your classroom setting (e.g. 55 students in Ethiopia).\n"
+            "* Task & Constraints: Define what to create (e.g. 15-minute paired task) with clear constraints (chalkboard only, no student devices).\n"
+            "* Output Format: Request a structured delivery format, such as numbered instructions, discussion questions, or a short glossary.\n\n"
             "Including all 5 elements turns generic responses into classroom-ready materials."
         )
 
-    # Topic 3: Lesson Planning / 5-Step Structure
-    if any(k in low_q for k in ("lesson plan", "planning", "5-step", "5 step", "objective", "hook", "guided practice")):
-        return (
-            "Effective lesson planning with AI follows a 5-step instructional flow:\n\n"
-            "1. Learning Objective: Align with grade-level competencies.\n"
-            "2. Hook: Prompt AI for a 5-minute curiosity-sparking local riddle or question.\n"
-            "3. Direct Instruction: Generate tiered explanations and clear analogies.\n"
-            "4. Guided & Independent Practice: Draft group challenges or paired exercises.\n"
-            "5. Exit Ticket: Create 2 diagnostic exit questions to check mastery.\n\n"
-            "Always tailor the timing and activities to your typical 40-45 minute period."
-        )
-
-    # Topic 4: Low-Resource & Offline Preparation / Single Device / Large Classes
+    # Topic 3: Low-Resource & Offline Preparation / Single Device / Large Classes
     if any(k in low_q for k in ("offline", "low resource", "internet", "connectivity", "phone", "chalkboard", "blackboard", "large class", "50")):
         return (
-            "In low-connectivity or high-density Ethiopian classrooms (50+ students), use the 'Batch Preparation' methodology:\n\n"
-            "1. Offline Reality: Students do not need devices or internet. The teacher uses a single phone during connectivity hours.\n"
-            "2. Advance Drafting: Prompt AI to generate tiered reading passages, vocabulary glossaries, or quiz questions.\n"
-            "3. Classroom Delivery: Transcribe exercises onto the chalkboard or assign small peer groups to share a single written prompt.\n\n"
-            "This empowers you to deliver modern, differentiated pedagogy completely offline."
+            "In schools with low internet connectivity or large classes (50+ students), apply the 'Batch Preparation' methodology. "
+            "You do not need internet or computers in the classroom—you use a single phone during connectivity hours to plan ahead.\n\n"
+            "* Batch Preparation: Generate lesson plans, tiered reading passages, and diagnostic exit tickets at home or where internet is available.\n"
+            "* Chalkboard Delivery: Transcribe generated exercises, discussion prompts, and diagrams onto the blackboard for the whole class.\n"
+            "* Peer Group Work: Have small teams of 5-8 students share a single written prompt or activity sheet to foster collaborative learning.\n\n"
+            "Strategic preparation allows you to deliver modern, engaging pedagogy completely offline."
+        )
+
+    # Topic 4: Lesson Planning / 5-Step Structure
+    if any(k in low_q for k in ("lesson plan", "planning", "5-step", "5 step", "objective", "hook", "guided practice")):
+        return (
+            "The 5-Step Lesson Planning Workflow structures a standard 40-45 minute period into an engaging, competency-based learning experience. "
+            "AI acts as a fast ideation partner to draft each stage of the instructional period.\n\n"
+            "* Hook & Objective: Prompt AI for a 5-minute curiosity-sparking local riddle or story to start the period with high energy.\n"
+            "* Direct & Guided Instruction: Use AI to draft tiered explanations, everyday analogies, and paired student practice tasks.\n"
+            "* Exit Ticket: Conclude the period with 2 diagnostic exit questions to check whether students achieved the core competency.\n\n"
+            "AI speeds up lesson preparation so you can focus your attention on student engagement."
         )
 
     # Topic 5: Formative Assessment / Evidence to Action / Exit Tickets
     if any(k in low_q for k in ("assessment", "formative", "quiz", "evidence", "ticket", "exit", "diagnos", "re-teach")):
         return (
-            "Formative assessment is about transforming 'Evidence into Action':\n\n"
-            "1. Quick Diagnostics: Prompt AI to create a 2-question exit ticket with plausible distractors that reveal common misconceptions.\n"
-            "2. Evidence Collection: Review student answers to see which group grasped the concept and which struggled.\n"
-            "3. Action / Re-teaching: Ask AI for an alternative visual metaphor or hands-on activity to re-teach the topic tomorrow.\n\n"
-            "The goal is real-time adjustment, not assigning punitive grades."
+            "Formative assessment is about transforming 'Evidence into Action' during the lesson rather than grading students. "
+            "It gives you real-time feedback on what students understand so you can adjust your instruction immediately.\n\n"
+            "* Plausible Distractors: Prompt AI to create multiple-choice exit tickets where wrong answers reveal specific common misunderstandings.\n"
+            "* Rapid Evidence Collection: Use quick gestures (thumbs-up/down) or slate boards to rapidly assess understanding across 50+ students.\n"
+            "* Targeted Re-Teaching: Ask AI for an alternative visual metaphor or hands-on activity to re-teach confusing concepts the next day.\n\n"
+            "The purpose of formative assessment is continuous learning adjustment, not assigning punitive scores."
         )
 
     # Topic 6: Universal Design for Learning (UDL) / Inclusion / Differentiation
     if any(k in low_q for k in ("udl", "universal design", "differentiat", "inclusion", "struggl", "advanced", "tier", "special")):
         return (
-            "Universal Design for Learning (UDL) ensures every student reaches the same competency through multiple means of access:\n\n"
-            "1. Tiered Texts: Use AI to take a core reading passage and instantly create 3 versions: simplified vocabulary, standard grade-level, and enriched.\n"
-            "2. Multiple Representations: Generate bilingual word banks (e.g., Amharic and English terms) and visual diagram descriptions.\n"
-            "3. Multiple Means of Action: Allow learners to demonstrate understanding via oral presentations, chalkboard problem-solving, or drawings."
+            "Universal Design for Learning (UDL) ensures every student in a diverse, mixed-ability classroom can access the curriculum. "
+            "AI allows you to quickly differentiate materials so all learners achieve the same core competencies.\n\n"
+            "* Tiered Texts: Prompt AI to take a core reading passage and instantly create simplified, standard, and enriched reading levels.\n"
+            "* Multiple Representations: Generate bilingual word banks (English and Amharic) and visual descriptions for complex concepts.\n"
+            "* Flexible Demonstration: Allow students to express their learning through oral presentations, drawings, or chalkboard demonstrations.\n\n"
+            "Inclusion provides diverse pathways for every student to succeed."
         )
 
     # Topic 7: Privacy, Safety, Ethics, and Bias
     if any(k in low_q for k in ("privacy", "safety", "ethic", "bias", "pii", "student name", "data", "protect")):
         return (
-            "Student data protection and ethical AI use are foundational:\n\n"
-            "1. Never Share PII: Never enter student names, identification numbers, grades, or personal family information into any AI tool.\n"
-            "2. Anonymous Personas: Use generic descriptors instead (e.g., 'A Grade 6 student struggling with multi-step word problems').\n"
-            "3. Bias Inspection: Check AI suggestions for cultural relevance and ensure they do not reinforce gender or regional stereotypes."
+            "Student data protection and ethical AI use are foundational responsibilities for modern educators. "
+            "You must ensure AI is used safely, securely, and with cultural integrity in your school.\n\n"
+            "* Never Share PII: Never enter student names, identification numbers, grades, or personal family details into any AI system.\n"
+            "* Use Generic Personas: Describe learner needs generically instead (e.g., 'A Grade 6 student struggling with multi-step word problems').\n"
+            "* Inspect Cultural Relevance: Review every generated example to verify it aligns with Ethiopian culture, geography, and values.\n\n"
+            "Your professional leadership ensures AI serves safe and meaningful educational progress."
         )
 
-    # Contextual Elaboration based on Active Module
-    if section:
-        clean_section = "\n".join([line.strip() for line in section.splitlines() if line.strip() and not line.startswith("MODULE:")])[:400]
-        return (
-            f"Here is pedagogical guidance for your question regarding {active_module}:\n\n"
-            f"{clean_section}\n\n"
-            "Practical Classroom Application: Remember that AI is most effective when guided by clear constraints "
-            "(such as class size, available materials, and curriculum standards). "
-            "Feel free to ask a specific question about how to apply this in your classroom!"
-        )
-
-    # General course encouragement
-    return (
-        f"In {active_module}, AI acts as a powerful preparation partner for Ethiopian educators. "
-        "You can use it to draft lesson objectives, generate localized examples, create differentiated exercises, "
-        "and formulate formative exit tickets. "
-        "What specific challenge or classroom activity would you like to explore?"
-    )
+    # Default: Return curated 1-paragraph + 3-bullet-point response for active module
+    return MODULE_CURATED_EXPLANATIONS.get(mod_num, MODULE_CURATED_EXPLANATIONS[1])
 
 
 # ---------------------------------------------------------------------------
@@ -278,25 +331,34 @@ async def _discover_models(client: httpx.AsyncClient, api_key: str) -> list[str]
     return valid_models
 
 
-SCRATCHPAD_PATTERNS = [
-    r"^\s*\*\s+(Goal|Domain|Constraints?|Concept|Draft|Drafting|Formatting|Tone|Word Count|User Question|Current Module|Role|Context|Module \d+ Content|Content Check|Constraint Check)\b",
+META_PATTERNS = [
+    r"ethiopian educator taking",
+    r"module \d+:\s*ai basics",
+    r"friendly,\s*encouraging,\s*warm",
+    r"under \d+\s*words",
+    r"plain text",
+    r"no meta-talk",
+    r"no bulleted checklists",
+    r"prompt says",
+    r"the prompt",
+    r"referring to the current",
+    r"i'll stick to",
+    r"i will stick to",
+    r"let's stick to",
+    r"^\s*\*\s*(greeting|explanation|goal|domain|constraints?|concept|draft|drafting|formatting|tone|word count|user question|current module|role|context|content check|constraint check|ai basics|categories|core principle|example)\b",
+    r"^\s*(greeting|explanation|goal|domain|constraints?|draft|drafting|formatting|tone|word count):",
+    r"\b(draft\s*\d*|final response)\s*:",
+    r"^\s*\*\s+[a-z\s]+:\s*[a-z\s]+\([^\)]+\)",
 ]
-
-
-def is_scratchpad_header(line: str) -> bool:
-    for pat in SCRATCHPAD_PATTERNS:
-        if re.search(pat, line, re.IGNORECASE):
-            return True
-    return False
 
 
 def clean_ai_output(t: str, fallback_fn=None) -> str:
     """
     Sanitize model output:
     1. Strips <thought>...</thought> tags if present.
-    2. Strips chain-of-thought scratchpads (e.g. * Goal:, * Domain:, * Constraints:, * Draft:).
-    3. Extracts final response clean of internal reasoning.
-    4. If only an aborted scratchpad was produced, seamlessly invokes fallback_fn.
+    2. Strips Markdown headers.
+    3. Detects prompt echoes, scratchpads, and meta-talk.
+    4. Extracts clean final response if present, or seamlessly invokes fallback_fn.
     """
     if not t:
         return fallback_fn() if fallback_fn else ""
@@ -305,36 +367,40 @@ def clean_ai_output(t: str, fallback_fn=None) -> str:
     # Strip XML thinking or reasoning tags
     t = re.sub(r"<thought>.*?</thought>", "", t, flags=re.DOTALL).strip()
     t = re.sub(r"<reasoning>.*?</reasoning>", "", t, flags=re.DOTALL).strip()
+    t = re.sub(r"\[thought\].*?\[/thought\]", "", t, flags=re.DOTALL | re.IGNORECASE).strip()
 
-    # Check for trivial title echo
+    # Strip markdown headers (##, ###, etc.)
+    t = re.sub(r"^\s*#{1,6}\s*", "", t, flags=re.MULTILINE).strip()
+
+    # Check for trivial title echo or overly short response
     if t.lower().strip() in (
         "ai for teaching and learning",
         "ai for teaching and learning (ethiopian educators edition)",
         "module 1: ai basics and the teacher as editor",
-    ):
+    ) or len(t) < 40:
         return fallback_fn() if fallback_fn else ""
 
-    # Check if text contains scratchpad meta-talk
-    has_scratchpad = any(re.search(pat, t, re.MULTILINE | re.IGNORECASE) for pat in SCRATCHPAD_PATTERNS)
+    # Check if text contains scratchpad meta-talk or prompt echo
+    has_meta = any(re.search(pat, t, re.MULTILINE | re.IGNORECASE) for pat in META_PATTERNS)
 
-    if has_scratchpad:
-        # 1. Look for 'Draft 1:' or 'Drafting:' or 'Final Response:'
+    if has_meta:
+        # 1. Look for 'Draft 1:' or 'Drafting:' or 'Final Response:' followed by real text
         draft_match = re.search(r'(?:Draft\s*\d*|Drafting|Final Response):\s*(.*?)(?=\n\s*\*|\Z)', t, flags=re.DOTALL | re.IGNORECASE)
         if draft_match:
             candidate = draft_match.group(1).strip().strip('"')
-            if len(candidate) > 50 and not candidate.startswith('*'):
-                return candidate
+            if len(candidate) > 60 and not any(re.search(pat, candidate, re.IGNORECASE) for pat in META_PATTERNS):
+                if not candidate.endswith(("...", "(", "<")):
+                    return candidate
 
         # 2. Look for the last quoted multi-sentence paragraph
-        quotes = re.findall(r'"([A-Z][^"]{50,})"', t, flags=re.DOTALL)
+        quotes = re.findall(r'"([A-Z][^"]{60,})"', t, flags=re.DOTALL)
         if quotes:
-            return quotes[-1].strip().strip('"')
+            candidate = quotes[-1].strip().strip('"')
+            if not any(re.search(pat, candidate, re.IGNORECASE) for pat in META_PATTERNS):
+                if not candidate.endswith(("...", "(", "<")):
+                    return candidate
 
-        # 3. If there is no clean draft and the text is predominantly bulleted planning
-        return fallback_fn() if fallback_fn else ""
-
-    # If the text starts with a scratchpad bullet
-    if t.startswith('*') and is_scratchpad_header(t.splitlines()[0]):
+        # 3. If there is no clean, complete draft, fall back to the curated knowledge base
         return fallback_fn() if fallback_fn else ""
 
     return t
@@ -342,8 +408,7 @@ def clean_ai_output(t: str, fallback_fn=None) -> str:
 
 async def _answer_rest(question: str, section: str, module_title: str) -> str:
     """
-    Direct REST call to Gemini API with dynamic model discovery and universal payload fallback.
-    If the API is unreachable, falls back to the pedagogical knowledge-base engine.
+    Direct REST call to Gemini API with dynamic model discovery and clean fallback.
     """
     api_key = _get_gemini_api_key()
     if not api_key:
@@ -362,29 +427,32 @@ async def _answer_rest(question: str, section: str, module_title: str) -> str:
             }
         ],
         "generationConfig": {
-            "temperature": 0.3,
+            "temperature": 0.4,
             "maxOutputTokens": _MAX_OUTPUT_TOKENS,
-            "thinkingConfig": {
-                "thinkingBudget": 0
-            }
         }
     }
 
-    payload_universal = {
+    payload_clean_inlined = {
         "contents": [
             {
                 "role": "user",
-                "parts": [{"text": f"{system_inst}\n\nTEACHER QUESTION:\n{question}"}]
+                "parts": [{
+                    "text": (
+                        f"You are a helpful WhatsApp AI tutor for Ethiopian educators on {module_title}.\n"
+                        f"Teacher's question: {question}\n\n"
+                        "Please answer directly in exactly 1 short paragraph plus 2-3 bullet points (* ) for practical classroom application."
+                    )
+                }]
             }
         ],
         "generationConfig": {
-            "temperature": 0.3,
+            "temperature": 0.4,
             "maxOutputTokens": _MAX_OUTPUT_TOKENS,
         }
     }
 
     last_error = ""
-    async with httpx.AsyncClient(timeout=25.0) as client:
+    async with httpx.AsyncClient(timeout=20.0) as client:
         # Dynamically discover active models for this key
         discovered = await _discover_models(client, api_key)
         preferred_model = os.getenv("GEMINI_MODEL") or DEFAULT_MODEL
@@ -400,10 +468,10 @@ async def _answer_rest(question: str, section: str, module_title: str) -> str:
             if m not in models_to_try:
                 models_to_try.append(m)
 
-        for model_name in models_to_try[:6]:
+        for model_name in models_to_try[:5]:
             for api_version in ("v1beta", "v1"):
                 url = f"https://generativelanguage.googleapis.com/{api_version}/models/{model_name}:generateContent?key={api_key}"
-                for payload in (payload_primary, payload_universal):
+                for payload in (payload_primary, payload_clean_inlined):
                     try:
                         resp = await client.post(url, json=payload)
                         if resp.status_code == 200:
@@ -464,7 +532,7 @@ def _answer_sync(question: str, section: str, module_title: str) -> str:
                     model_name,
                     system_instruction=system_inst,
                     generation_config=genai.types.GenerationConfig(
-                        temperature=0.3,
+                        temperature=0.4,
                         max_output_tokens=_MAX_OUTPUT_TOKENS,
                     ),
                 )
@@ -473,14 +541,31 @@ def _answer_sync(question: str, section: str, module_title: str) -> str:
                 model = genai.GenerativeModel(
                     model_name,
                     generation_config=genai.types.GenerationConfig(
-                        temperature=0.3,
+                        temperature=0.4,
                         max_output_tokens=_MAX_OUTPUT_TOKENS,
                     ),
                 )
-                inlined_prompt = f"SYSTEM INSTRUCTION & PEDAGOGICAL GUIDELINES:\n{system_inst}\n\nTEACHER QUESTION:\n{question}"
+                inlined_prompt = (
+                    f"You are a helpful WhatsApp AI tutor for Ethiopian educators on {module_title}.\n"
+                    f"Teacher's question: {question}\n\n"
+                    "Please answer directly in exactly 1 short paragraph plus 2-3 bullet points (* ) for practical classroom application."
+                )
                 response = model.generate_content(inlined_prompt)
 
-            raw_text = (response.text or "").strip()
+            raw_text = ""
+            try:
+                if hasattr(response, "candidates") and response.candidates:
+                    parts = response.candidates[0].content.parts
+                    text_parts = [p.text for p in parts if hasattr(p, "text") and not getattr(p, "thought", False)]
+                    raw_text = "\n".join(text_parts).strip()
+            except Exception:
+                pass
+            if not raw_text:
+                try:
+                    raw_text = (response.text or "").strip()
+                except Exception:
+                    raw_text = ""
+
             text = clean_ai_output(raw_text, fallback_fn=lambda: answer_pedagogy_kb(question, section, module_title))
             if text:
                 return text

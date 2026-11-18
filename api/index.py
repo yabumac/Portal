@@ -842,11 +842,12 @@ async def tutor_chat(wa_id: str, question: str) -> None:
     cur = state.get_state(wa_id)
     unit_id = cur.get("unit_id") or curriculum.DEFAULT_UNIT_ID
     lesson = state.current_lesson(cur)
-    lesson_id = cur.get("tutor_lesson") or (lesson["id"] if lesson else None)
-    lesson_title = lesson["title"] if lesson else f"Module {(cur.get('lesson_index') or 0) + 1}"
+    active_lesson_id = cur.get("tutor_lesson") or (lesson["id"] if lesson else None)
+    active_lesson = curriculum.get_lesson(unit_id, active_lesson_id) if (unit_id and active_lesson_id) else lesson
+    lesson_title = active_lesson["title"] if active_lesson else (lesson["title"] if lesson else f"Module {(cur.get('lesson_index') or 0) + 1}")
     is_completed = state.is_course_complete(cur)
 
-    section = curriculum.lesson_as_context(unit_id, lesson_id) if unit_id and lesson_id else ""
+    section = curriculum.lesson_as_context(unit_id, active_lesson_id) if unit_id and active_lesson_id else ""
 
     db.log_activity(wa_id, "tutor_query", question[:80])
     answer = await ai_tutor.answer_question(question, section=section, module_title=lesson_title)
