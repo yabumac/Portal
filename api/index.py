@@ -340,6 +340,16 @@ async def catch_all_get(request: Request, path: str = ""):
                 media_type = "video/mp4" if filename.endswith(".mp4") else ("image/png" if filename.endswith(".png") else "application/octet-stream")
                 return FileResponse(candidate, media_type=media_type)
 
+    if clean_path in ("api/debug-path", "debug-path") or "debug-path" in raw_path:
+        return {
+            "url_path": request.url.path,
+            "path_arg": path,
+            "query_params": dict(request.query_params),
+            "headers": {k: v for k, v in request.headers.items() if not k.lower().startswith("cookie")},
+            "scope_path": request.scope.get("path"),
+            "scope_root_path": request.scope.get("root_path"),
+        }
+
     return Response(
         content='{"status": "ok", "message": "WhatsApp Learning Bot running"}',
         media_type="application/json",
