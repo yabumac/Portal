@@ -308,6 +308,140 @@ async def test_whatsapp_endpoint(request: Request):
         return JSONResponse({"success": False, "error": str(e), "hint": "Check phone number format and server logs."})
 
 
+@router.post("/api/broadcast")
+async def send_broadcast_endpoint(request: Request):
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "error": "Invalid JSON body"}, status_code=400)
+
+    target_segment = (data.get("segment") or "all").lower().strip()
+    raw_message = (data.get("message") or "").strip()
+
+    if not raw_message:
+        return JSONResponse({"success": False, "error": "Message text cannot be empty."}, status_code=400)
+
+    all_users = db.get_all_users()
+    from bot import whatsapp
+
+    recipients = []
+    for phone, u in all_users.items():
+        phase = u.get("phase", "idle")
+        completed = u.get("completed_lessons") or []
+        is_grad = phase == "complete" or len(completed) >= 1
+
+        if target_segment == "all":
+            recipients.append((phone, u))
+        elif target_segment == "active" and (phase in ("lesson", "quiz", "tutor") and not is_grad):
+            recipients.append((phone, u))
+        elif target_segment == "completed" and is_grad:
+            recipients.append((phone, u))
+        elif target_segment == "idle" and phase == "idle":
+            recipients.append((phone, u))
+
+    if not recipients:
+        return JSONResponse({
+            "success": False,
+            "error": f"No educators found in target cohort '{target_segment}'.",
+        }, status_code=400)
+
+    results = []
+    sent_count = 0
+    failed_count = 0
+
+    for phone, u in recipients:
+        phase_label = "Graduated" if (u.get("phase") == "complete" or len(u.get("completed_lessons") or []) >= 1) else (u.get("phase", "active").capitalize())
+        progress_str = "100%" if phase_label == "Graduated" else ("50%" if u.get("phase") == "quiz" else "0%")
+
+        body = (
+            raw_message
+            .replace("{phone}", phone)
+            .replace("{status}", phase_label)
+            .replace("{progress}", progress_str)
+        )
+
+        try:
+            resp = await whatsapp.send_text(phone, body)
+            if resp.status_code < 400:
+                sent_count += 1
+                results.append({"phone": phone, "status": "sent"})
+                db.log_activity(phone, "admin_broadcast_sent", f"Cohort ({target_segment}): {body[:60]}")
+            else:
+                failed_count += 1
+                err_detail = resp.text[:200]
+                results.append({"phone": phone, "status": "failed", "error": err_detail})
+                db.log_activity(phone, "admin_broadcast_failed", f"HTTP {resp.status_code}: {err_detail[:60]}")
+        except Exception as e:
+            failed_count += 1
+            results.append({"phone": phone, "status": "failed", "error": str(e)})
+            db.log_activity(phone, "admin_broadcast_error", str(e))
+
+    return JSONResponse({
+        "success": True,
+        "segment": target_segment,
+        "total_targets": len(recipients),
+        "sent_count": sent_count,
+        "failed_count": failed_count,
+        "results": results,
+    })
+
+
+@router.post("/api/direct-message")
+async def send_direct_message_endpoint(request: Request):
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "error": "Invalid JSON body"}, status_code=400)
+
+    phone = (data.get("phone") or "").strip().replace("+", "").replace(" ", "").replace("-", "")
+    raw_message = (data.get("message") or "").strip()
+
+    if not phone:
+        return JSONResponse({"success": False, "error": "Recipient phone number is required."}, status_code=400)
+    if not raw_message:
+        return JSONResponse({"success": False, "error": "Message text cannot be empty."}, status_code=400)
+
+    user = db.get_user_state(phone) or {}
+    phase_label = "Graduated" if (user.get("phase") == "complete" or len(user.get("completed_lessons") or []) >= 1) else (user.get("phase", "active").capitalize())
+    progress_str = "100%" if phase_label == "Graduated" else ("50%" if user.get("phase") == "quiz" else "0%")
+
+    body = (
+        raw_message
+        .replace("{phone}", phone)
+        .replace("{status}", phase_label)
+        .replace("{progress}", progress_str)
+    )
+
+    from bot import whatsapp
+    try:
+        resp = await whatsapp.send_text(phone, body)
+        if resp.status_code < 400:
+            db.log_activity(phone, "admin_direct_message_sent", f"Direct msg: {body[:60]}")
+            return JSONResponse({
+                "success": True,
+                "phone": phone,
+                "message": f"Message delivered successfully to {phone}",
+            })
+        else:
+            err_detail = resp.text[:300]
+            db.log_activity(phone, "admin_direct_message_failed", f"HTTP {resp.status_code}: {err_detail[:60]}")
+            return JSONResponse({
+                "success": False,
+                "phone": phone,
+                "error": f"WhatsApp API error (HTTP {resp.status_code})",
+                "detail": err_detail,
+            }, status_code=400)
+    except Exception as e:
+        db.log_activity(phone, "admin_direct_message_error", str(e))
+        return JSONResponse({"success": False, "phone": phone, "error": str(e)}, status_code=500)
+
+
 @router.get("/api/test-gemini")
 async def test_gemini_endpoint(request: Request):
     if not is_authenticated(request):
@@ -528,6 +662,19 @@ async def admin_dashboard(request: Request):
     # Serialize analytics data to JSON string for Chart.js
     analytics_json = json.dumps(data)
 
+    # Calculate cohort statistics for the broadcast console
+    count_all = len(users_list)
+    count_active = sum(1 for u in users_list if u["phase"] in ("lesson", "quiz", "tutor") and not (u["phase"] == "complete" or u["completed_count"] >= 1))
+    count_completed = sum(1 for u in users_list if u["phase"] == "complete" or u["completed_count"] >= 1)
+    count_idle = sum(1 for u in users_list if u["phase"] == "idle")
+
+    recipient_options_html = ""
+    for u in users_list:
+        p = u["phone_number"]
+        ph = u["phase"].capitalize()
+        pct = u["progress_percent"]
+        recipient_options_html += f'<option value="{p}">{p} — {ph} ({pct}% complete)</option>\n'
+
     # Pre-render table rows
     users_rows_html = ""
     for u in users_list:
@@ -590,6 +737,7 @@ async def admin_dashboard(request: Request):
             <td><span class="badge {assess_badge}">{assess_done}</span></td>
             <td class="cell-actions">
                 <button class="btn-action btn-view" onclick="openUserModal('{phone}')">Journey</button>
+                <button class="btn-action" style="background:#22c55e;color:#ffffff;border:1px solid #16a34a;font-weight:600;" onclick="openDirectMessage('{phone}')" title="Send direct custom message to this educator">Message</button>
                 <button class="btn-action btn-reset" onclick="resetUser('{phone}')">Reset</button>
                 <button class="btn-action btn-reset" style="color:#ef4444;border-color:#fecaca;" onclick="deleteUser('{phone}')">Delete</button>
             </td>
@@ -1255,6 +1403,123 @@ async def admin_dashboard(request: Request):
             from {{ transform: rotate(0deg); }}
             to {{ transform: rotate(360deg); }}
         }}
+
+        /* Messaging Console Styles */
+        .msg-console-body {{
+            padding: 24px;
+        }}
+        .msg-grid-2col {{
+            display: grid;
+            grid-template-columns: 1.25fr 1fr;
+            gap: 24px;
+        }}
+        @media (max-width: 900px) {{
+            .msg-grid-2col {{
+                grid-template-columns: 1fr;
+            }}
+        }}
+        .msg-input-label {{
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            color: #475569;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        .msg-field {{
+            width: 100%;
+            background: #ffffff;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 10px 14px;
+            font-size: 13px;
+            font-family: inherit;
+            color: #0f172a;
+            transition: border-color 0.15s ease;
+            box-sizing: border-box;
+        }}
+        .msg-field:focus {{
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(37,99,235,0.12);
+        }}
+        .tag-chips-wrap {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin: 8px 0 12px;
+        }}
+        .tag-chip {{
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 3px 10px;
+            background: #f1f5f9;
+            border: 1px solid #cbd5e1;
+            border-radius: 9999px;
+            font-size: 11px;
+            font-weight: 600;
+            color: #334155;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            user-select: none;
+        }}
+        .tag-chip:hover {{
+            background: #e2e8f0;
+            border-color: #94a3b8;
+            color: #0f172a;
+        }}
+        .wa-preview-card {{
+            background: #ece5dd;
+            background-image: radial-gradient(#d4cbbe 1px, transparent 1px);
+            background-size: 16px 16px;
+            border: 1px solid #d1d5db;
+            border-radius: 14px;
+            padding: 18px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            min-height: 200px;
+        }}
+        .wa-preview-bubble {{
+            background: #dcf8c6;
+            border-radius: 10px 10px 2px 10px;
+            padding: 10px 14px;
+            max-width: 100%;
+            font-size: 13px;
+            line-height: 1.45;
+            color: #111827;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.12);
+            white-space: pre-wrap;
+            word-break: break-word;
+            align-self: flex-end;
+        }}
+        .wa-preview-time {{
+            font-size: 10px;
+            color: #65676b;
+            text-align: right;
+            margin-top: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 4px;
+        }}
+        .advisory-box {{
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            border-radius: 10px;
+            padding: 12px 16px;
+            font-size: 12px;
+            color: #1e40af;
+            line-height: 1.5;
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            margin-top: 16px;
+        }}
     </style>
 </head>
 <body>
@@ -1428,6 +1693,177 @@ async def admin_dashboard(request: Request):
             </div>
             <div class="insights-grid" id="surveyInsightsGrid">
                 <!-- Injected via JavaScript from real DB data -->
+            </div>
+        </div>
+
+        <!-- WhatsApp Broadcast & Direct Messaging Console -->
+        <div class="chart-card" id="messagingCard" style="margin-bottom: 28px;">
+            <div class="chart-card-header" style="flex-wrap:wrap;gap:12px;border-bottom:1px solid var(--border);padding-bottom:16px;">
+                <div class="chart-title-wrap">
+                    <div style="width:38px;height:38px;border-radius:10px;background:#25D366;color:#ffffff;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(37,211,102,0.3);">
+                        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
+                    </div>
+                    <div>
+                        <h2 class="chart-card-title">WhatsApp Broadcast & Direct Messaging</h2>
+                        <p class="chart-subtitle">Draft custom messages to specific learners or broadcast announcements to registered cohorts</p>
+                    </div>
+                </div>
+                <div class="filter-pills">
+                    <button id="tabBroadcastBtn" class="filter-pill active" onclick="switchMsgTab('broadcast')">Cohort Broadcast</button>
+                    <button id="tabDirectBtn" class="filter-pill" onclick="switchMsgTab('direct')">Direct Message to Individual</button>
+                </div>
+            </div>
+
+            <div class="msg-console-body">
+                <!-- TAB 1: COHORT BROADCAST -->
+                <div id="broadcastTab">
+                    <div class="msg-grid-2col">
+                        <div>
+                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
+                                <div>
+                                    <div class="msg-input-label">
+                                        <span>Target Cohort</span>
+                                    </div>
+                                    <select id="broadcastSegment" class="msg-field" onchange="onSegmentChange()">
+                                        <option value="all">All Registered Teachers ({count_all})</option>
+                                        <option value="active">Active Learners in Module 1 ({count_active})</option>
+                                        <option value="completed">Graduated / Finished ({count_completed})</option>
+                                        <option value="idle">Idle / Not Started ({count_idle})</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <div class="msg-input-label">
+                                        <span>Quick Draft Preset</span>
+                                    </div>
+                                    <select id="broadcastTemplate" class="msg-field" onchange="applyBroadcastTemplate(this.value)">
+                                        <option value="">-- Choose Draft Template --</option>
+                                        <option value="nudge">Course Nudge: Continue Module 1</option>
+                                        <option value="congrats">Congratulations: Module 1 Complete</option>
+                                        <option value="resources">New AI Pedagogical Resources</option>
+                                        <option value="checkin">Pedagogical Practice Check-in</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="msg-input-label">
+                                <span>Message Content</span>
+                                <span style="font-size:11px;color:var(--text-muted);font-weight:normal;" id="broadcastCharCount">0 characters</span>
+                            </div>
+                            <textarea id="broadcastMessageText" class="msg-field" rows="5" placeholder="Draft your broadcast message to educators here..." oninput="updateBroadcastPreview()"></textarea>
+
+                            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:6px;">
+                                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                                    <span style="font-size:11px;font-weight:700;color:#64748b;">Insert tags:</span>
+                                    <span class="tag-chip" onclick="insertTag('{{phone}}', 'broadcastMessageText', updateBroadcastPreview)">+ {{phone}}</span>
+                                    <span class="tag-chip" onclick="insertTag('{{status}}', 'broadcastMessageText', updateBroadcastPreview)">+ {{status}}</span>
+                                    <span class="tag-chip" onclick="insertTag('{{progress}}', 'broadcastMessageText', updateBroadcastPreview)">+ {{progress}}</span>
+                                </div>
+                                <button id="btnSendBroadcast" onclick="sendBroadcast()" class="btn btn-primary" style="background:#25D366;border-color:#22c55e;padding:9px 18px;font-weight:700;">
+                                    Send Broadcast
+                                </button>
+                            </div>
+
+                            <div id="broadcastResult" style="display:none;margin-top:14px;padding:12px 16px;border-radius:10px;font-size:13px;line-height:1.4;"></div>
+                        </div>
+
+                        <div>
+                            <div class="msg-input-label">
+                                <span>Simulated WhatsApp Live Preview</span>
+                                <span style="font-size:11px;color:#10b981;font-weight:600;" id="broadcastPreviewBadge">Batch send</span>
+                            </div>
+                            <div class="wa-preview-card">
+                                <div class="wa-preview-bubble" id="broadcastPreviewBubble">
+                                    Your message will preview here in real-time as you draft...
+                                    <div class="wa-preview-time">
+                                        <span>12:00</span>
+                                        <svg width="12" height="12" fill="none" stroke="#53bdeb" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7m-5 0l4 4"/></svg>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="advisory-box">
+                                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="flex-shrink:0;margin-top:1px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                <span><b>Meta 24-Hour Policy Notice:</b> WhatsApp Cloud API permits custom free-form messages to users active within the last 24 hours. Messages sent to recipients outside this window may require WhatsApp pre-approved utility/marketing templates.</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TAB 2: DIRECT MESSAGE -->
+                <div id="directTab" style="display:none;">
+                    <div class="msg-grid-2col">
+                        <div>
+                            <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:14px;margin-bottom:14px;">
+                                <div>
+                                    <div class="msg-input-label">
+                                        <span>Select Registered Educator</span>
+                                    </div>
+                                    <select id="directRecipientSelect" class="msg-field" onchange="onDirectRecipientSelect(this.value)">
+                                        <option value="">-- Choose Educator from DB --</option>
+                                        {recipient_options_html}
+                                    </select>
+                                </div>
+                                <div>
+                                    <div class="msg-input-label">
+                                        <span>Or Direct Phone Input</span>
+                                    </div>
+                                    <input id="directPhoneInput" type="text" class="msg-field" placeholder="e.g. 251911223344" oninput="updateDirectPreview()">
+                                </div>
+                            </div>
+
+                            <div style="margin-bottom:14px;">
+                                <div class="msg-input-label">
+                                    <span>Quick Draft Preset</span>
+                                </div>
+                                <select id="directTemplate" class="msg-field" onchange="applyDirectTemplate(this.value)">
+                                    <option value="">-- Choose Draft Template --</option>
+                                    <option value="support">Direct Support: Pedagogical Assistance</option>
+                                    <option value="followup">Learning Follow-up: Check-in on Progress</option>
+                                    <option value="quiz_help">Quiz Support: Module 1 Questions</option>
+                                </select>
+                            </div>
+
+                            <div class="msg-input-label">
+                                <span>Message Content</span>
+                                <span style="font-size:11px;color:var(--text-muted);font-weight:normal;" id="directCharCount">0 characters</span>
+                            </div>
+                            <textarea id="directMessageText" class="msg-field" rows="5" placeholder="Draft your custom message to this specific teacher here..." oninput="updateDirectPreview()"></textarea>
+
+                            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:6px;">
+                                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                                    <span style="font-size:11px;font-weight:700;color:#64748b;">Insert tags:</span>
+                                    <span class="tag-chip" onclick="insertTag('{{phone}}', 'directMessageText', updateDirectPreview)">+ {{phone}}</span>
+                                    <span class="tag-chip" onclick="insertTag('{{status}}', 'directMessageText', updateDirectPreview)">+ {{status}}</span>
+                                    <span class="tag-chip" onclick="insertTag('{{progress}}', 'directMessageText', updateDirectPreview)">+ {{progress}}</span>
+                                </div>
+                                <button id="btnSendDirect" onclick="sendDirectMessage()" class="btn btn-primary" style="background:#25D366;border-color:#22c55e;padding:9px 18px;font-weight:700;">
+                                    Send Direct Message
+                                </button>
+                            </div>
+
+                            <div id="directResult" style="display:none;margin-top:14px;padding:12px 16px;border-radius:10px;font-size:13px;line-height:1.4;"></div>
+                        </div>
+
+                        <div>
+                            <div class="msg-input-label">
+                                <span>Simulated WhatsApp Live Preview</span>
+                                <span style="font-size:11px;color:#2563eb;font-weight:600;" id="directPreviewBadge">Direct message</span>
+                            </div>
+                            <div class="wa-preview-card">
+                                <div class="wa-preview-bubble" id="directPreviewBubble">
+                                    Your message will preview here in real-time as you draft...
+                                    <div class="wa-preview-time">
+                                        <span>12:00</span>
+                                        <svg width="12" height="12" fill="none" stroke="#53bdeb" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7m-5 0l4 4"/></svg>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="advisory-box">
+                                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="flex-shrink:0;margin-top:1px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                <span><b>Direct Channel:</b> This sends a one-to-one message straight from your official WhatsApp number to the selected educator. Activity is automatically logged in the learner's journey.</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1866,6 +2302,257 @@ async def admin_dashboard(request: Request):
                 }}
             }} catch (e) {{
                 alert('Error: ' + e.message);
+            }}
+        }}
+
+        const BROADCAST_TEMPLATES = {{
+            nudge: "Hello Teacher! A quick friendly reminder from EdTech Hub: your introductory course on Artificial Intelligence for Ethiopian Teachers is in progress. Whenever you have 5 minutes, reply 'continue' or 'menu' to pick up right where you left off!",
+            congrats: "Congratulations, Teacher! You have completed Module 1 of Introduction to Artificial Intelligence (AI) for Teachers in Ethiopia. Remember: AI is your assistant and you are the editor. Text us anytime to consult your AI Tutor or review the concepts!",
+            resources: "Greetings from EdTech Hub! New instructional prompts, offline classroom examples, and pedagogical strategies have been updated. Text 'menu' anytime to explore the latest materials.",
+            checkin: "Hello! How is your teaching practice going this week? Have you had a chance to try drafting a lesson plan or quiz with AI? If you have any questions or ideas, our AI Tutor is ready to assist you here 24/7."
+        }};
+
+        const DIRECT_TEMPLATES = {{
+            support: "Hello Teacher! We noticed you are currently learning with EdTech Hub. Is there any question about Module 1 or classroom AI integration that we can assist you with today? Feel free to reply directly to this message.",
+            followup: "Hello! Following up on your progress in AI for Teaching and Learning. Great work on your learning journey so far! How are you finding the course materials? Let us know if you need any support.",
+            quiz_help: "Hello Teacher! We saw you were working on the Module 1 quiz. If any concept needs clarification, our AI Tutor is always here to guide you. Feel free to ask any question or reply 'menu' to continue."
+        }};
+
+        function switchMsgTab(tab) {{
+            const bTab = document.getElementById('broadcastTab');
+            const dTab = document.getElementById('directTab');
+            const bBtn = document.getElementById('tabBroadcastBtn');
+            const dBtn = document.getElementById('tabDirectBtn');
+            if (tab === 'broadcast') {{
+                bTab.style.display = 'block';
+                dTab.style.display = 'none';
+                bBtn.classList.add('active');
+                dBtn.classList.remove('active');
+            }} else {{
+                bTab.style.display = 'none';
+                dTab.style.display = 'block';
+                bBtn.classList.remove('active');
+                dBtn.classList.add('active');
+            }}
+        }}
+
+        function applyBroadcastTemplate(key) {{
+            const txt = document.getElementById('broadcastMessageText');
+            if (key && BROADCAST_TEMPLATES[key]) {{
+                txt.value = BROADCAST_TEMPLATES[key];
+            }}
+            updateBroadcastPreview();
+        }}
+
+        function applyDirectTemplate(key) {{
+            const txt = document.getElementById('directMessageText');
+            if (key && DIRECT_TEMPLATES[key]) {{
+                txt.value = DIRECT_TEMPLATES[key];
+            }}
+            updateDirectPreview();
+        }}
+
+        function insertTag(tag, textareaId, callback) {{
+            const el = document.getElementById(textareaId);
+            if (!el) return;
+            const start = el.selectionStart || el.value.length;
+            const end = el.selectionEnd || el.value.length;
+            el.value = el.value.substring(0, start) + tag + el.value.substring(end);
+            el.selectionStart = el.selectionEnd = start + tag.length;
+            el.focus();
+            if (callback) callback();
+        }}
+
+        function updateBroadcastPreview() {{
+            const txt = document.getElementById('broadcastMessageText').value;
+            const bubble = document.getElementById('broadcastPreviewBubble');
+            const counter = document.getElementById('broadcastCharCount');
+            counter.textContent = `${{txt.length}} characters`;
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString([], {{ hour: '2-digit', minute: '2-digit' }});
+            
+            const rendered = (txt || "Your message will preview here in real-time as you draft...")
+                .split('{{phone}}').join("+251911223344")
+                .split('{{status}}').join("Learning")
+                .split('{{progress}}').join("50%");
+            
+            bubble.innerHTML = `${{escapeHtml(rendered)}}<div class="wa-preview-time"><span>${{timeStr}}</span><svg width="12" height="12" fill="none" stroke="#53bdeb" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7m-5 0l4 4"/></svg></div>`;
+        }}
+
+        function updateDirectPreview() {{
+            const txt = document.getElementById('directMessageText').value;
+            const phone = document.getElementById('directPhoneInput').value.trim() || "+251911223344";
+            const bubble = document.getElementById('directPreviewBubble');
+            const counter = document.getElementById('directCharCount');
+            counter.textContent = `${{txt.length}} characters`;
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString([], {{ hour: '2-digit', minute: '2-digit' }});
+            
+            const rendered = (txt || "Your message will preview here in real-time as you draft...")
+                .split('{{phone}}').join(phone)
+                .split('{{status}}').join("Learning")
+                .split('{{progress}}').join("50%");
+            
+            bubble.innerHTML = `${{escapeHtml(rendered)}}<div class="wa-preview-time"><span>${{timeStr}}</span><svg width="12" height="12" fill="none" stroke="#53bdeb" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7m-5 0l4 4"/></svg></div>`;
+        }}
+
+        function onDirectRecipientSelect(val) {{
+            if (val) {{
+                document.getElementById('directPhoneInput').value = val;
+            }}
+            updateDirectPreview();
+        }}
+
+        function onSegmentChange() {{
+            const seg = document.getElementById('broadcastSegment').value;
+            const badge = document.getElementById('broadcastPreviewBadge');
+            badge.textContent = `Batch to ${{seg}}`;
+        }}
+
+        function openDirectMessage(phone) {{
+            switchMsgTab('direct');
+            const phoneInput = document.getElementById('directPhoneInput');
+            const select = document.getElementById('directRecipientSelect');
+            if (phoneInput) phoneInput.value = phone;
+            if (select) {{
+                let matched = false;
+                for (let i = 0; i < select.options.length; i++) {{
+                    if (select.options[i].value === phone) {{
+                        select.selectedIndex = i;
+                        matched = true;
+                        break;
+                    }}
+                }}
+                if (!matched) select.selectedIndex = 0;
+            }}
+            updateDirectPreview();
+            const card = document.getElementById('messagingCard');
+            if (card) {{
+                card.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+            }}
+            const txt = document.getElementById('directMessageText');
+            if (txt) txt.focus();
+        }}
+
+        function escapeHtml(text) {{
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }}
+
+        async function sendBroadcast() {{
+            const segment = document.getElementById('broadcastSegment').value;
+            const message = document.getElementById('broadcastMessageText').value.trim();
+            const resultDiv = document.getElementById('broadcastResult');
+            const btn = document.getElementById('btnSendBroadcast');
+            
+            if (!message) {{
+                alert('Please enter a broadcast message to send.');
+                return;
+            }}
+            if (!confirm(`Are you sure you want to broadcast this message to the '${{segment.toUpperCase()}}' cohort?`)) {{
+                return;
+            }}
+            
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinning" style="display:inline-block;margin-right:6px;">↻</span> Broadcasting...';
+            resultDiv.style.display = 'none';
+            
+            try {{
+                const urlParams = new URLSearchParams(window.location.search);
+                const adminPass = urlParams.get('password') || urlParams.get('pass');
+                let endpoint = '/admin/api/broadcast';
+                if (adminPass) endpoint += '?password=' + encodeURIComponent(adminPass);
+                
+                const resp = await fetch(endpoint, {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ segment, message }})
+                }});
+                const res = await resp.json();
+                
+                resultDiv.style.display = 'block';
+                if (res.success) {{
+                    resultDiv.style.background = '#dcfce7';
+                    resultDiv.style.border = '1px solid #86efac';
+                    resultDiv.style.color = '#15803d';
+                    resultDiv.innerHTML = `<b>Broadcast Finished!</b> Delivered to <b>${{res.sent_count}} / ${{res.total_targets}}</b> teachers successfully.` + 
+                        (res.failed_count > 0 ? ` <span style="color:#b91c1c;">(${{res.failed_count}} failed or outside 24h window)</span>` : '');
+                    refreshDashboardData(true);
+                }} else {{
+                    resultDiv.style.background = '#fee2e2';
+                    resultDiv.style.border = '1px solid #fca5a5';
+                    resultDiv.style.color = '#b91c1c';
+                    resultDiv.innerHTML = `<b>Broadcast Error:</b> ${{res.error || 'Failed to send broadcast'}}`;
+                }}
+            }} catch (e) {{
+                resultDiv.style.display = 'block';
+                resultDiv.style.background = '#fee2e2';
+                resultDiv.style.border = '1px solid #fca5a5';
+                resultDiv.style.color = '#b91c1c';
+                resultDiv.innerHTML = `<b>Error:</b> ${{e.message}}`;
+            }} finally {{
+                btn.disabled = false;
+                btn.innerHTML = 'Send Broadcast';
+            }}
+        }}
+
+        async function sendDirectMessage() {{
+            const phone = document.getElementById('directPhoneInput').value.trim();
+            const message = document.getElementById('directMessageText').value.trim();
+            const resultDiv = document.getElementById('directResult');
+            const btn = document.getElementById('btnSendDirect');
+            
+            if (!phone) {{
+                alert('Please select or enter a recipient phone number.');
+                return;
+            }}
+            if (!message) {{
+                alert('Please enter a message to send.');
+                return;
+            }}
+            
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinning" style="display:inline-block;margin-right:6px;">↻</span> Sending...';
+            resultDiv.style.display = 'none';
+            
+            try {{
+                const urlParams = new URLSearchParams(window.location.search);
+                const adminPass = urlParams.get('password') || urlParams.get('pass');
+                let endpoint = '/admin/api/direct-message';
+                if (adminPass) endpoint += '?password=' + encodeURIComponent(adminPass);
+                
+                const resp = await fetch(endpoint, {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ phone, message }})
+                }});
+                const res = await resp.json();
+                
+                resultDiv.style.display = 'block';
+                if (res.success) {{
+                    resultDiv.style.background = '#dcfce7';
+                    resultDiv.style.border = '1px solid #86efac';
+                    resultDiv.style.color = '#15803d';
+                    resultDiv.innerHTML = `<b>Success!</b> Message sent to <b>${{phone}}</b> via WhatsApp.`;
+                    document.getElementById('directMessageText').value = '';
+                    updateDirectPreview();
+                    refreshDashboardData(true);
+                }} else {{
+                    resultDiv.style.background = '#fee2e2';
+                    resultDiv.style.border = '1px solid #fca5a5';
+                    resultDiv.style.color = '#b91c1c';
+                    resultDiv.innerHTML = `<b>Delivery Failed:</b> ${{res.error || 'Failed to send message'}}. ${{res.detail ? `<div style="font-size:11px;margin-top:4px;font-family:monospace;">${{res.detail}}</div>` : ''}}`;
+                }}
+            }} catch (e) {{
+                resultDiv.style.display = 'block';
+                resultDiv.style.background = '#fee2e2';
+                resultDiv.style.border = '1px solid #fca5a5';
+                resultDiv.style.color = '#b91c1c';
+                resultDiv.innerHTML = `<b>Error:</b> ${{e.message}}`;
+            }} finally {{
+                btn.disabled = false;
+                btn.innerHTML = 'Send Direct Message';
             }}
         }}
 

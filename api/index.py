@@ -249,6 +249,32 @@ async def handle_post(request: Request, path: str = ""):
         from api.admin import login_submit
         return await login_submit(request)
 
+    # Route admin API POST endpoints
+    if clean_path.startswith("admin/api/") or clean_path.startswith("api/admin/"):
+        subpath = clean_path
+        for prefix in ("admin/api/", "api/admin/"):
+            if subpath.startswith(prefix):
+                subpath = subpath[len(prefix):]
+                break
+
+        if subpath == "broadcast":
+            from api.admin import send_broadcast_endpoint
+            return await send_broadcast_endpoint(request)
+        if subpath == "direct-message":
+            from api.admin import send_direct_message_endpoint
+            return await send_direct_message_endpoint(request)
+        if subpath == "test-whatsapp":
+            from api.admin import test_whatsapp_endpoint
+            return await test_whatsapp_endpoint(request)
+        if subpath.startswith("user/") and subpath.endswith("/reset"):
+            phone = subpath.split("/")[1]
+            from api.admin import reset_single_user
+            return await reset_single_user(phone, request)
+        if subpath.startswith("user/") and subpath.endswith("/delete"):
+            phone = subpath.split("/")[1]
+            from api.admin import delete_single_user
+            return await delete_single_user(phone, request)
+
     try:
         data = await request.json()
         logger.info("Incoming webhook payload received: %s", str(data)[:400])
