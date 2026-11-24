@@ -46,10 +46,10 @@ BOT_INTRO = (
 
 MODULE_1_CLOSING = (
     "Module 1: Closing\n\n"
-    "Congratulations! You have completed the first module on understanding Artificial Intelligence.\n\n"
+    "Congratulations! You have completed the course on understanding Artificial Intelligence.\n\n"
     "You have learned what AI is, how it works, examples of AI in everyday life, and how it can support teaching and learning.\n\n"
     "Remember, AI is a tool to support your work, not replace your knowledge, creativity and professional judgment as a teacher.\n\n"
-    "In the next module, we will explore practical AI tools, including ChatGPT, Google Gemini and Microsoft Copilot, and learn how to use them."
+    "You have finished the entire course! You can return to the Main Menu, ask the AI Tutor questions, or review and restart the module below."
 )
 
 # ---------------------------------------------------------------------------
@@ -106,11 +106,12 @@ UNITS = {
             "formative assessment, Universal Design for Learning, and ethical pedagogy."
         ),
         "complete_message": (
-            "Congratulations on completing AI for Teaching and Learning.\n\n"
+            "Congratulations on completing Introduction to Artificial Intelligence (AI) for Teachers in Ethiopia!\n\n"
+            "You have completed Module 1: Understanding Artificial Intelligence (AI).\n\n"
             "Key takeaway: AI is a capable assistant, but you are the educator. Your professional "
             "judgment, care for students, and understanding of Ethiopian classrooms ensure AI "
             "serves meaningful learning.\n\n"
-            "You can revisit any module or ask your AI Tutor questions anytime."
+            "You can return to the Main Menu, ask your AI Tutor questions, or review the module anytime."
         ),
         "lessons": [
             # ---------------------------------------------------------------
@@ -138,7 +139,7 @@ UNITS = {
                             "Section 1: What is Artificial Intelligence?",
                         ],
                         "question": "Q: What is AI?",
-                        "prompt_note": "Take a moment to write what AI means to you below, or tap Continue:",
+                        "prompt_note": "Take a moment to type your answer or thoughts about what AI means to you below:",
                         "model_answer": (
                             "A: Artificial Intelligence (AI) is a technology that enables computers and machines "
                             "to perform tasks that normally require human intelligence, such as learning from information, "
@@ -158,7 +159,7 @@ UNITS = {
                             "These examples show how AI makes everyday activities easier, faster, and more convenient."
                         ],
                         "question": "Q: For what purposes do you use AI in your daily life?",
-                        "prompt_note": "Type your answer below, or tap Continue to proceed:",
+                        "prompt_note": "Type your answer below (e.g. search, translation, writing, maps):",
                         "feedback": (
                             "Thank you for sharing! AI tools are already part of our everyday lives, making activities "
                             "easier, faster, and more convenient."
@@ -246,244 +247,6 @@ UNITS = {
                         ),
                     },
                 ],
-            },
-
-            # ---------------------------------------------------------------
-            # Module 2
-            # ---------------------------------------------------------------
-            {
-                "id": "lesson_2",
-                "title": "Module 2: The 5-Part Teacher Prompt Formula",
-                "video_file": "vid_03_prompts.mp4",
-                "image_file": "img_03_prompt_formula.png",
-                "caption": "Video: The 5-Part Teacher Prompt Formula (2:22-2:41)",
-                "body": [
-                    "Module 2: Writing Effective Teacher Prompts\n\n"
-                    "A prompt is the instruction you give an AI tool. Clear, structured prompts produce high-quality, "
-                    "usable classroom materials on the first attempt.",
-                    "The 5-Part Prompt Formula:\n"
-                    "1. Role: Who should the AI act as? (e.g., 'Act as an experienced Grade 6 Ethiopian science teacher.')\n"
-                    "2. Context and Audience: Who are your students? (e.g., 'Class of 55 students with developing English literacy.')\n"
-                    "3. Task: What specific material do you need? (e.g., 'Design an interactive 20-minute group activity.')\n"
-                    "4. Constraints: What local conditions apply? (e.g., 'No lab equipment, using local garden leaves and simple vocabulary.')\n"
-                    "5. Output Format: How should it be structured? (e.g., 'Numbered steps with a 3-question student check.')",
-                    "Prompt Refinement:\n"
-                    "Treat AI as a conversational partner. If the first output is too long or complex, reply: "
-                    "'Shorten to 150 words and use simpler terminology suitable for Grade 6.'",
-                ],
-                "quiz": {
-                    "question": "Which set represents the 5 core elements of the teacher prompt formula?",
-                    "options": {
-                        "A": "Length, Speed, Grammar, Vocabulary, Tone",
-                        "B": "Role, Context, Task, Constraints, Output Format",
-                        "C": "Subject, Date, Grade, Score, Textbook",
-                    },
-                    "correct": "B",
-                    "explanation": (
-                        "Correct. Role, Context, Task, Constraints, and Output Format guarantee that "
-                        "AI outputs directly match your learners and classroom resources."
-                    ),
-                    "hint": (
-                        "Remember the 5 essential questions: Who should AI act as? Who are your learners? "
-                        "What is the assignment? What classroom constraints exist? And how should the response be formatted?"
-                    ),
-                },
-            },
-
-            # ---------------------------------------------------------------
-            # Module 3
-            # ---------------------------------------------------------------
-            {
-                "id": "lesson_3",
-                "title": "Module 3: AI in Ethiopian Classrooms (Offline and Low-Resource)",
-                "video_file": "vid_04_context.mp4",
-                "image_file": "img_04_ethiopia.png",
-                "caption": "Video: Ethiopian Classroom Context and Offline Preparation (0:49-1:06)",
-                "body": [
-                    "Module 3: Practical Strategies for Low-Connectivity and Large Classes\n\n"
-                    "Ethiopian classrooms often feature 50+ students, shared devices, and periodic connectivity. "
-                    "AI can dramatically reduce your workload when used for teacher preparation.",
-                    "Offline Implementation Methods:\n"
-                    "1. Batch Preparation: When internet is available, generate lesson materials, quizzes, and discussion questions for the upcoming week and save them on your phone or notebook.\n"
-                    "2. Single Device Delivery: You do not need student computers. Write AI-generated reading passages or word problems directly on the chalkboard.\n"
-                    "3. Cooperative Learning Groups: Divide classes into teams of 5 to 6 students to solve challenges collaboratively using a single written prompt.\n"
-                    "4. Multilingual Bridging: Use AI to create bilingual vocabulary glossaries (English with Amharic, Afaan Oromoo, or Tigrinya terms) to support language learners.",
-                ],
-                "quiz": {
-                    "question": "How can a teacher in a school without student computers use AI effectively?",
-                    "options": {
-                        "A": "Prepare materials ahead of time on a personal phone and transcribe them onto the chalkboard.",
-                        "B": "Wait until individual student devices are funded for every classroom.",
-                        "C": "Only use AI for administrative reports, never for instructional lessons.",
-                    },
-                    "correct": "A",
-                    "explanation": (
-                        "Correct. AI supports educator preparation behind the scenes. A teacher with a single phone "
-                        "can prepare interactive group activities for an entirely offline class."
-                    ),
-                    "hint": (
-                        "Think about single-device batch preparation: a teacher can draft exercises on their own device "
-                        "during connectivity hours, then bring them to class using traditional chalkboards and small groups."
-                    ),
-                },
-            },
-
-            # ---------------------------------------------------------------
-            # Module 4
-            # ---------------------------------------------------------------
-            {
-                "id": "lesson_4",
-                "title": "Module 4: 5-Step Lesson Planning Workflow",
-                "video_file": "vid_05_planning.mp4",
-                "image_file": "img_05_workflow.png",
-                "caption": "Video: 5-Step Lesson Planning Workflow (1:07-1:40)",
-                "body": [
-                    "Module 4: 5-Step Lesson Planning Workflow\n\n"
-                    "Follow this disciplined sequence when planning lessons with AI:\n\n"
-                    "Step 1 - Goal: Identify the specific learning standard from the Ethiopian National Curriculum.\n"
-                    "Step 2 - Plan: Ask AI for a structured lesson outline (Warm-up, Direct Teaching, Guided Practice, Wrap-up).\n"
-                    "Step 3 - Material: Generate culturally authentic examples, local stories, and exercises.\n"
-                    "Step 4 - Adapt: Structure activities for whole-class engagement, small groups, or independent practice.\n"
-                    "Step 5 - Review: Verify factual correctness, timing feasibility, and curriculum alignment.",
-                    "Professional Standard:\n"
-                    "Never take an AI-generated lesson directly into class without review. Verify that times, "
-                    "prerequisites, and local examples are accurate for your school.",
-                ],
-                "quiz": {
-                    "question": "What is the teacher's most critical responsibility during Step 5 (Review)?",
-                    "options": {
-                        "A": "Check that the lesson was generated in under thirty seconds.",
-                        "B": "Ensure all standard textbook exercises are replaced completely.",
-                        "C": "Confirm accuracy, curriculum alignment, and feasibility for your classroom.",
-                    },
-                    "correct": "C",
-                    "explanation": (
-                        "Correct. The educator is the instructional designer. Reviewing ensures every lesson "
-                        "meets national curriculum standards and fits your students' current capabilities."
-                    ),
-                    "hint": (
-                        "Recall the 'Teacher as Editor' standard: AI provides a fast first draft, but the educator must check "
-                        "factual truth, national curriculum standards, and whether the timing actually fits their classroom."
-                    ),
-                },
-            },
-
-            # ---------------------------------------------------------------
-            # Module 5
-            # ---------------------------------------------------------------
-            {
-                "id": "lesson_5",
-                "title": "Module 5: Formative Assessment and Evidence to Action",
-                "video_file": "vid_06_assessment.mp4",
-                "image_file": "img_06_assessment.png",
-                "caption": "Video: Formative Assessment and Evidence to Action (1:41-2:08)",
-                "body": [
-                    "Module 5: Formative Assessment and Evidence to Action\n\n"
-                    "Formative assessment informs instruction during learning rather than at the end.",
-                    "The 3-Stage Assessment Cycle:\n"
-                    "1. Generate: Prompt AI to draft exit tickets, short check questions, and diagnostic rubrics.\n"
-                    "2. Review: Ensure questions assess deep understanding rather than mere memorization.\n"
-                    "3. Evidence to Action: Identify common student errors and ask AI for targeted re-teaching ideas, alternative analogies, or guided peer activities.\n\n"
-                    "Guiding Rule: AI informs, but the teacher decides.",
-                ],
-                "quiz": {
-                    "question": "What is the primary role of AI in formative classroom assessment?",
-                    "options": {
-                        "A": "Grading papers and submitting final marks without teacher check.",
-                        "B": "Rapidly drafting assessment checks and proposing re-teaching strategies for student misconceptions.",
-                        "C": "Replacing teacher evaluations with automated multiple-choice scoring.",
-                    },
-                    "correct": "B",
-                    "explanation": (
-                        "Correct. AI helps formulate diagnostic questions and suggests pedagogical responses "
-                        "when students struggle, while the teacher maintains full decision-making control."
-                    ),
-                    "hint": (
-                        "Remember that formative assessment diagnoses learning gaps in real time: AI is an assistant that drafts "
-                        "exit questions and proposes re-teaching interventions, while the teacher decides the next teaching move."
-                    ),
-                },
-            },
-
-            # ---------------------------------------------------------------
-            # Module 6
-            # ---------------------------------------------------------------
-            {
-                "id": "lesson_6",
-                "title": "Module 6: Differentiated and Inclusive Learning (UDL)",
-                "video_file": "vid_06_udl.mp4",
-                "image_file": "img_07_collaboration.png",
-                "caption": "Video: Differentiated and Inclusive Learning (UDL) (2:41-2:58)",
-                "body": [
-                    "Module 6: Differentiated and Inclusive Learning\n\n"
-                    "Universal Design for Learning (UDL) ensures every student can access challenging content, "
-                    "regardless of English proficiency or learning speed.",
-                    "Three Core UDL Principles with AI:\n"
-                    "1. Multiple Means of Representation: Generate simplified summaries, visual analogies, and bilingual glossaries.\n"
-                    "2. Multiple Means of Engagement: Connect abstract topics to local community contexts (agriculture, markets, sports).\n"
-                    "3. Multiple Means of Expression: Let students show understanding through writing, oral presentations, or peer diagrams.",
-                    "3-Tier Differentiation Prompt:\n"
-                    "'Create 3 versions of this reading passage:\n"
-                    "- Tier 1: Simplified sentence structure and key vocabulary definitions.\n"
-                    "- Tier 2: Standard grade-level text.\n"
-                    "- Tier 3: Extension questions requiring analytical application.'",
-                ],
-                "quiz": {
-                    "question": "How does AI support Universal Design for Learning in diverse classrooms?",
-                    "options": {
-                        "A": "By rapidly drafting tiered versions of content while maintaining rigorous standards.",
-                        "B": "By creating entirely separate syllabi for every individual student.",
-                        "C": "By lowering academic expectations for students with developing language skills.",
-                    },
-                    "correct": "A",
-                    "explanation": (
-                        "Correct. AI allows teachers to generate tiered texts and multiple access points quickly, "
-                        "ensuring all students work toward the same high-level competency."
-                    ),
-                    "hint": (
-                        "UDL is about multiple means of access, not lowering expectations: AI quickly provides tiered text "
-                        "versions (simplified vocab, visual metaphors, bilingual glossaries) so all students reach the same goal."
-                    ),
-                },
-            },
-
-            # ---------------------------------------------------------------
-            # Module 7
-            # ---------------------------------------------------------------
-            {
-                "id": "lesson_7",
-                "title": "Module 7: Responsible AI, Privacy and Final Action Plan",
-                "video_file": "vid_07_principles.mp4",
-                "image_file": "img_08_principles.png",
-                "caption": "Video: 5 Key Principles and Capstone Action Plan (2:58-3:07)",
-                "body": [
-                    "Module 7: Responsible AI, Student Privacy, and Ethics\n\n"
-                    "AI safety and ethics require active teacher vigilance:\n\n"
-                    "1. Student Privacy: Never input student names, ID numbers, or personal identifying information into commercial AI tools.\n"
-                    "2. Verification: AI models can generate plausible-sounding falsehoods (hallucinations). Always verify facts against official curriculum textbooks.\n"
-                    "3. Cultural Alignment: Check AI outputs for cultural relevance and fairness for Ethiopian contexts.\n"
-                    "4. Digital Equity: Ensure students without home computers or internet are never disadvantaged.",
-                    "The 5 Guiding Principles:\n"
-                    "Understand -> Protect -> Align -> Review -> Adapt.\n\n"
-                    "Action Step: Start with one lesson plan, one formative exit check, and one reflection this week.",
-                ],
-                "quiz": {
-                    "question": "What is the non-negotiable rule regarding student privacy when using public AI tools?",
-                    "options": {
-                        "A": "Student names may be entered if grades are left out.",
-                        "B": "Personal information is permitted if the tool states it is for education.",
-                        "C": "Never enter student names, identification numbers, or private details into public AI tools.",
-                    },
-                    "correct": "C",
-                    "explanation": (
-                        "Correct. Student privacy is paramount. Always use anonymized, generic descriptions "
-                        "(e.g., 'Grade 6 student') when prompting AI systems."
-                    ),
-                    "hint": (
-                        "Student data protection is absolute: personally identifiable information such as student names, "
-                        "registration numbers, or family details must never be uploaded or shared with public AI models."
-                    ),
-                },
             },
         ],
     }

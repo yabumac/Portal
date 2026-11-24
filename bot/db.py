@@ -639,10 +639,10 @@ def get_analytics_summary() -> dict:
         "idle": 0,
     }
 
-    total_mods = 7
+    total_mods = 1
     try:
         from content import curriculum
-        total_mods = curriculum.total_lessons() or 7
+        total_mods = curriculum.total_lessons() or 1
     except Exception:
         pass
 
@@ -662,31 +662,34 @@ def get_analytics_summary() -> dict:
             completed_learners += 1
             status_distribution["completed"] += 1
             progress_pct = 100
+            curr_title = "Course Completed (Module 1 Finished)"
         elif phase in ("lesson", "quiz", "tutor"):
             active_learners += 1
             status_distribution[phase] += 1
             curr_idx = lesson_idx if lesson_idx is not None else 0
-            progress_pct = min(100, round((curr_idx / total_mods) * 100))
+            if phase == "quiz":
+                progress_pct = 50
+                curr_title = "Module 1: Quiz"
+            elif phase == "tutor":
+                progress_pct = 35
+                curr_title = "Module 1: AI Tutor"
+            else:
+                step_i = u.get("step_index", 0)
+                progress_pct = min(45, (step_i + 1) * 15)
+                curr_title = "Module 1: Understanding Artificial Intelligence (AI)"
             if 0 <= curr_idx < total_mods:
                 lesson_funnel[curr_idx] += 1
         elif phase == "assessment":
             status_distribution["assessment"] += 1
             progress_pct = 5
+            curr_title = "AI Readiness Survey"
         else:
             status_distribution["idle"] += 1
             progress_pct = 0
+            curr_title = "Module 1: Understanding Artificial Intelligence (AI)"
 
         if len(assess_answers) >= 4:
             assessment_completed += 1
-
-        curr_title = f"Module {(lesson_idx or 0) + 1}"
-        try:
-            from content import curriculum
-            mod = curriculum.get_lesson(curriculum.DEFAULT_UNIT_ID, lesson_idx or 0)
-            if mod:
-                curr_title = mod.get("title", curr_title)
-        except Exception:
-            pass
 
         last_seen = u.get("last_seen", "")
         rel_time = "Never"

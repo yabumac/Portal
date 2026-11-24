@@ -353,7 +353,7 @@ async def export_users_csv(request: Request):
     output.write("\ufeff")  # UTF-8 BOM for Microsoft Excel compatibility
     writer = csv.writer(output)
 
-    # Detailed Header Row
+    # Detailed Header Row (1-Module Curriculum)
     headers = [
         "Phone Number (WhatsApp)",
         "Learner Status / Phase",
@@ -368,12 +368,6 @@ async def export_users_csv(request: Request):
         "Module 1 Q1 (What is AI)",
         "Module 1 Q2 (Generative AI Example)",
         "Module 1 Q3 (Can AI Be Trusted)",
-        "Module 2 Quiz (Prompt Formula)",
-        "Module 3 Quiz (Offline & Low-Resource)",
-        "Module 4 Quiz (Lesson Planning)",
-        "Module 5 Quiz (Formative Assessment)",
-        "Module 6 Quiz (Inclusive UDL)",
-        "Module 7 Quiz (Responsible AI)",
         "Quiz Score Summary (Correct/Attempted)",
         "Total Messages / Interactions",
         "First Seen / Registered (UTC)",
@@ -388,16 +382,21 @@ async def export_users_csv(request: Request):
         phase = u.get("phase", "idle")
         completed = u.get("completed_lessons") or []
         comp_count = len(completed)
-        progress_pct = f"{round((comp_count / 7) * 100)}%"
 
-        # Current Module Title
-        lesson_idx = u.get("lesson_index", 0)
-        if comp_count >= 7:
-            curr_module_title = "Course Completed (All 7 Modules)"
-        elif lesson_idx is not None and 0 <= lesson_idx < len(lessons_list):
-            curr_module_title = lessons_list[lesson_idx].get("title", f"Module {lesson_idx + 1}")
+        # Progress calculation for 1-module course
+        if phase == "complete" or comp_count >= 1:
+            progress_pct = "100%"
+            curr_module_title = "Course Completed (Module 1 Finished)"
+        elif phase == "quiz":
+            progress_pct = "50%"
+            curr_module_title = "Module 1: Quiz"
+        elif phase == "lesson":
+            step_i = u.get("step_index", 0)
+            progress_pct = f"{min(45, (step_i + 1) * 15)}%"
+            curr_module_title = "Module 1: Understanding Artificial Intelligence (AI)"
         else:
-            curr_module_title = f"Module {min(comp_count + 1, 7)}"
+            progress_pct = "0%"
+            curr_module_title = "Module 1: Understanding Artificial Intelligence (AI)"
 
         # Assessment Answers breakdown
         assess = u.get("assessment_answers") or {}
@@ -420,7 +419,7 @@ async def export_users_csv(request: Request):
         q4_opt = assessment_map.get("goal", {}).get("options", {}).get(q4_val, "")
         q4_text = f"{q4_val}: {q4_opt}" if q4_val else "Not answered"
 
-        # Quiz Answers breakdown (Module 1 Q1, Q2, Q3 and Modules 2-7)
+        # Quiz Answers breakdown (Module 1 Q1, Q2, Q3)
         quizzes = u.get("quiz_answers") or {}
         mod_quiz_cols = []
         correct_count = 0
@@ -462,28 +461,12 @@ async def export_users_csv(request: Request):
         else:
             mod_quiz_cols.append("Not attempted")
 
-        # Modules 2 through 7
-        for i in range(2, 8):
-            lid = f"lesson_{i}"
-            q_res = quizzes.get(lid)
-            if q_res:
-                attempted_count += 1
-                ans = q_res.get("answer", "")
-                is_corr = q_res.get("correct", False)
-                if is_corr:
-                    correct_count += 1
-                    mod_quiz_cols.append(f"{ans} (Correct)")
-                else:
-                    mod_quiz_cols.append(f"{ans} (Incorrect)")
-            else:
-                mod_quiz_cols.append("Not attempted")
-
         quiz_summary_str = f"{correct_count}/{attempted_count} correct" if attempted_count > 0 else "0/0 attempted"
 
         row = [
             phone,
             phase,
-            f"{comp_count} / 7",
+            f"{comp_count} / 1",
             progress_pct,
             curr_module_title,
             assess_status,
@@ -1841,9 +1824,9 @@ async def admin_dashboard(request: Request):
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;background:#f1f5f9;padding:16px;border-radius:12px;font-size:13px;">
                         <div><b>Phone:</b> <span style="font-family:monospace;">${{u.phone_number}}</span></div>
                         <div><b>Status:</b> ${{u.phase.toUpperCase()}}</div>
-                        <div><b>Current Step:</b> ${{u.lesson_index !== null ? 'Module ' + (u.lesson_index + 1) : 'None'}}</div>
+                        <div><b>Current Step:</b> ${{u.phase === 'complete' ? 'Course Completed' : (u.lesson_index !== null ? 'Module ' + (u.lesson_index + 1) : 'None')}}</div>
                         <div><b>Total Interactions:</b> ${{u.total_messages || 0}} msgs</div>
-                        <div><b>Completed Modules:</b> ${{(u.completed_lessons || []).length}} / ${{data.progression_funnel ? data.progression_funnel.total_modules : 7}}</div>
+                        <div><b>Completed Modules:</b> ${{(u.completed_lessons || []).length}} / ${{data.progression_funnel ? data.progression_funnel.total_modules : 1}}</div>
                         <div><b>Last Active:</b> ${{u.last_seen ? new Date(u.last_seen).toLocaleString() : 'Never'}}</div>
                     </div>
                     <h4 style="font-size:14px;margin-bottom:12px;font-weight:700;">Chronological Learning Log (${{hist.length}} actions)</h4>

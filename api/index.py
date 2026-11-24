@@ -456,9 +456,15 @@ async def handle_text(wa_id: str, raw: str) -> None:
     if phase == "lesson":
         awaiting = cur.get("awaiting_response")
         if awaiting == "what_is_ai":
+            if low in ("continue", "next", "skip", "pass", "idk", "go"):
+                await whatsapp.send_text(
+                    wa_id,
+                    "Please type your answer or thoughts about what AI means to you to continue:"
+                )
+                return
             cur["awaiting_response"] = None
             state.set_state(wa_id, cur)
-            db.log_activity(wa_id, "interactive_response", f"What is AI: {text[:60]}")
+            db.log_activity(wa_id, "interactive_response", f"What is AI: {text[:100]}")
             model_ans = (
                 "A: Artificial Intelligence (AI) is a technology that enables computers and machines "
                 "to perform tasks that normally require human intelligence, such as learning from information, "
@@ -478,9 +484,15 @@ async def handle_text(wa_id: str, raw: str) -> None:
             return
 
         if awaiting == "everyday_ai_use":
+            if low in ("continue", "next", "skip", "pass", "idk", "go"):
+                await whatsapp.send_text(
+                    wa_id,
+                    "Please type your thoughts on how you use AI (e.g. search, translation, writing, maps) to continue:"
+                )
+                return
             cur["awaiting_response"] = None
             state.set_state(wa_id, cur)
-            db.log_activity(wa_id, "interactive_response", f"Everyday AI: {text[:60]}")
+            db.log_activity(wa_id, "interactive_response", f"Everyday AI: {text[:100]}")
             feedback = (
                 "Thank you for sharing! AI tools are already part of our everyday lives, making activities "
                 "easier, faster, and more convenient."
@@ -489,7 +501,7 @@ async def handle_text(wa_id: str, raw: str) -> None:
             await asyncio.sleep(0.4)
             await whatsapp.send_buttons(
                 wa_id,
-                "Ready for Section 2 (AI in Education)?",
+                "Ready for Section 2 (Overview of AI in Education)?",
                 [
                     {"id": STEP_CONTINUE, "title": "Continue"},
                     {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
@@ -527,6 +539,10 @@ async def handle_text(wa_id: str, raw: str) -> None:
 # ---------------------------------------------------------------------------
 async def handle_button_click(wa_id: str, button_id: str) -> None:
     db.log_activity(wa_id, "button_click", button_id)
+
+    if button_id in ("main_menu", "menu"):
+        await send_menu(wa_id, fresh=False)
+        return
 
     if button_id in (ENROLL, RESUME, STEP_CONTINUE, NEXT_STEP, "continue", "next"):
         cur = state.get_state(wa_id)
@@ -651,14 +667,14 @@ async def send_menu(wa_id: str, fresh: bool = True) -> None:
             await whatsapp.send_text(
                 wa_id,
                 "Welcome back to EdTech Hub.\n\n"
-                "You have already finished all 7 modules of the course! Congratulations.\n\n"
+                "You have completed Introduction to Artificial Intelligence (AI) for Teachers in Ethiopia!\n\n"
                 "There are no further modules to continue. You can ask the AI Tutor questions, "
-                "or review and restart the modules below:",
+                "or review and restart the module below:",
             )
         elif has_progress:
             lesson = state.current_lesson(cur)
             lesson_title = lesson["title"] if lesson else f"Module {(lesson_idx or 0) + 1}"
-            total_mods = curriculum.total_lessons(cur.get("unit_id") or curriculum.DEFAULT_UNIT_ID) or 7
+            total_mods = curriculum.total_lessons(cur.get("unit_id") or curriculum.DEFAULT_UNIT_ID) or 1
             await whatsapp.send_text(
                 wa_id,
                 f"Welcome back to EdTech Hub.\n\n"
@@ -686,8 +702,9 @@ async def send_menu(wa_id: str, fresh: bool = True) -> None:
             await whatsapp.send_text(
                 wa_id,
                 "Course Completed:\n\n"
-                "You have finished all 7 modules. There are no further modules to continue. "
-                "You can ask the AI Tutor questions or review/restart the course below:",
+                "You have finished Introduction to Artificial Intelligence (AI) for Teachers in Ethiopia. "
+                "There are no further modules to continue. "
+                "You can ask the AI Tutor questions, or review and restart the module below:",
             )
         else:
             await whatsapp.send_text(wa_id, "Main menu:")
@@ -763,7 +780,7 @@ async def deliver_step(wa_id: str, lesson: dict, step_idx: int) -> None:
                 logger.warning("Failed to send image for step 1: %s", e)
 
         q_text = step.get("question", "Q: What is AI?")
-        note = step.get("prompt_note", "Take a moment to write what AI means to you below, or tap Continue:")
+        note = step.get("prompt_note", "Take a moment to type your answer or thoughts about what AI means to you below:")
         await whatsapp.send_text(wa_id, f"{q_text}\n\n{note}")
         await asyncio.sleep(0.3)
 
@@ -773,12 +790,11 @@ async def deliver_step(wa_id: str, lesson: dict, step_idx: int) -> None:
 
         await whatsapp.send_buttons(
             wa_id,
-            "Type your response or tap Continue:",
+            "Please type your answer in the chat box below:",
             [
-                {"id": STEP_CONTINUE, "title": "Continue"},
                 {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
             ],
-            footer="Answer or tap Continue",
+            footer="Type your answer to continue",
         )
         return
 
@@ -798,7 +814,7 @@ async def deliver_step(wa_id: str, lesson: dict, step_idx: int) -> None:
                 logger.warning("Failed to send image for step 2: %s", e)
 
         q_text = step.get("question", "Q: For what purposes do you use AI in your daily life?")
-        note = step.get("prompt_note", "Type your answer below, or tap Continue to proceed:")
+        note = step.get("prompt_note", "Type your answer below (e.g. search, translation, writing, maps):")
         await whatsapp.send_text(wa_id, f"{q_text}\n\n{note}")
         await asyncio.sleep(0.3)
 
@@ -808,12 +824,11 @@ async def deliver_step(wa_id: str, lesson: dict, step_idx: int) -> None:
 
         await whatsapp.send_buttons(
             wa_id,
-            "Type your response or tap Continue:",
+            "Please type your answer in the chat box below:",
             [
-                {"id": STEP_CONTINUE, "title": "Continue"},
                 {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
             ],
-            footer="Answer or tap Continue",
+            footer="Type your answer to continue",
         )
         return
 
@@ -869,21 +884,13 @@ async def advance_module_step(wa_id: str) -> None:
     step_idx = cur.get("step_index", 0)
     awaiting = cur.get("awaiting_response")
 
-    # If user tapped Continue while awaiting What is AI, deliver model answer first
-    if awaiting == "what_is_ai":
-        cur["awaiting_response"] = None
-        state.set_state(wa_id, cur)
-        model_ans = (
-            "A: Artificial Intelligence (AI) is a technology that enables computers and machines "
-            "to perform tasks that normally require human intelligence, such as learning from information, "
-            "recognizing patterns, understanding language and generating content."
+    # Enforce typed reflection: user must type their answer before continuing
+    if awaiting in ("what_is_ai", "everyday_ai_use"):
+        await whatsapp.send_text(
+            wa_id,
+            "Please type your answer to the question in the chat box above to continue.",
         )
-        await whatsapp.send_text(wa_id, model_ans)
-        await asyncio.sleep(0.4)
-
-    if awaiting == "everyday_ai_use":
-        cur["awaiting_response"] = None
-        state.set_state(wa_id, cur)
+        return
 
     next_step = step_idx + 1
     if next_step < len(steps):
@@ -1064,7 +1071,17 @@ async def handle_quiz_answer(wa_id: str, answer: str) -> None:
             if outcome == "lesson":
                 await deliver_lesson(wa_id, next_lesson)
             else:
-                await send_menu(wa_id, fresh=False)
+                await whatsapp.send_buttons(
+                    wa_id,
+                    "Course Complete! Choose an option below:",
+                    [
+                        {"id": "main_menu", "title": "Main Menu"},
+                        {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
+                        {"id": RESTART, "title": "Review / Restart"},
+                    ],
+                    header="Course Complete",
+                    footer="Tap an option",
+                )
             return
     else:
         hint_msg = result.get("hint") or "Review the lesson materials and key principles, then try again."
@@ -1165,7 +1182,7 @@ async def resume_from_tutor(wa_id: str) -> None:
     if state.is_course_complete(cur):
         await whatsapp.send_text(
             wa_id,
-            "You have completed all 7 modules of this course! Returning to the main menu.",
+            "You have completed Introduction to Artificial Intelligence (AI) for Teachers in Ethiopia! Returning to the main menu.",
         )
     await exit_tutor_flow(wa_id)
 
