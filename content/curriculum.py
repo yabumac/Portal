@@ -12,19 +12,44 @@ import os
 from typing import Any, Dict, List, Optional, Union
 
 DEFAULT_UNIT_ID = "unit_1"
-COURSE_TITLE = "AI for Teaching and Learning (Ethiopian Educators Edition)"
+COURSE_TITLE = "Introduction to Artificial Intelligence (AI) for Teachers in Ethiopia"
 
 # Intro Media Assets
 INTRO_VIDEO_FILENAME = "vid_01_welcome.mp4"
 INTRO_LOGO_FILENAME = "logo.png"
 
+COURSE_DESCRIPTION = (
+    "This introductory course equips Ethiopian primary and secondary school teachers with basic knowledge "
+    "and practical skills to understand and use Artificial Intelligence (AI) in teaching and learning. "
+    "Teachers will explore accessible AI tools and learn how to use them for lesson preparation, developing "
+    "learning materials, creating assessments, and supporting student learning. The course also introduces "
+    "responsible and ethical AI use in education."
+)
+
+LEARNING_OBJECTIVES = (
+    "By the end of the course, teachers will be able to:\n"
+    "• Explain AI and its applications in education.\n"
+    "• Identify and use basic AI tools such as ChatGPT, Gemini and Copilot.\n"
+    "• Write simple prompts to obtain useful AI-generated responses.\n"
+    "• Use AI to prepare lesson plans, teaching materials and assessment questions.\n"
+    "• Apply basic ethical principles when using AI in education."
+)
+
 BOT_INTRO = (
-    "Welcome to AI for Teaching and Learning (Ethiopian Educators Edition).\n\n"
-    "This course equips Ethiopian teachers to use Artificial Intelligence practically, "
-    "thoughtfully, and ethically in real classroom settings—including large classes, "
-    "shared devices, and offline environments.\n\n"
-    "Please watch the short introductory video below to review the four course objectives.\n\n"
-    "Select an option below to begin:"
+    "Introduction to Artificial Intelligence (AI) for Teachers in Ethiopia\n\n"
+    "Course description\n"
+    f"{COURSE_DESCRIPTION}\n\n"
+    "Learning objectives\n"
+    f"{LEARNING_OBJECTIVES}\n\n"
+    "Tap Continue below to begin Section 1, or Ask AI Tutor if you have any questions:"
+)
+
+MODULE_1_CLOSING = (
+    "Module 1: Closing\n\n"
+    "Congratulations! You have completed the first module on understanding Artificial Intelligence.\n\n"
+    "You have learned what AI is, how it works, examples of AI in everyday life, and how it can support teaching and learning.\n\n"
+    "Remember, AI is a tool to support your work, not replace your knowledge, creativity and professional judgment as a teacher.\n\n"
+    "In the next module, we will explore practical AI tools, including ChatGPT, Google Gemini and Microsoft Copilot, and learn how to use them."
 )
 
 # ---------------------------------------------------------------------------
@@ -89,46 +114,138 @@ UNITS = {
         ),
         "lessons": [
             # ---------------------------------------------------------------
-            # Module 1
+            # Module 1: Understanding Artificial Intelligence (AI)
             # ---------------------------------------------------------------
             {
                 "id": "lesson_1",
-                "title": "Module 1: AI Basics and The Teacher as Editor",
-                "video_file": "vid_02_basics.mp4",
-                "image_file": "img_02_scenario.png",
-                "caption": "Video: Pattern Recognition, Generative AI and The Teacher as Editor (0:33-0:49)",
-                "body": [
-                    "Module 1: AI Basics and The Teacher as Editor\n\n"
-                    "Artificial Intelligence (AI) enables computers to recognize patterns across large datasets "
-                    "and generate text, images, or audio responses based on probabilities.",
-                    "Common Generative AI Categories for Educators:\n"
-                    "1. Conversational Chatbots (ChatGPT, Gemini, Claude): Text assistants for drafting lesson plans and explanations.\n"
-                    "2. Visual Generators: Create diagrams, charts, and instructional illustrations.\n"
-                    "3. Audio and Voice Tools: Speech-to-text transcription and read-aloud support.",
-                    "Core Principle - The Teacher as Editor:\n"
-                    "AI is an assistant, never a substitute for educator oversight. Your professional judgment "
-                    "must guide every instructional, grading, and pedagogical decision.\n\n"
-                    "Classroom Decision Example:\n"
-                    "When grading 40 student papers, use AI to draft initial feedback suggestions, but review, "
-                    "calibrate, and finalize every assessment yourself. Never delegate grading authority entirely to AI.",
-                ],
-                "quiz": {
-                    "question": "What does Generative AI actually do when responding to a teacher prompt?",
-                    "options": {
-                        "A": "It thinks with human consciousness and emotional reasoning.",
-                        "B": "It searches a fixed, static textbook index.",
-                        "C": "It recognizes patterns in training data to predict useful responses.",
+                "title": "Module 1: Understanding Artificial Intelligence (AI)",
+                "image_file": "mod1_obj.jpg",
+                "steps": [
+                    {
+                        "step_index": 0,
+                        "title": "Introduction to AI for Teachers in Ethiopia",
+                        "texts": [
+                            "Introduction to Artificial Intelligence (AI) for Teachers in Ethiopia",
+                            f"Course description\n{COURSE_DESCRIPTION}",
+                            f"Learning objectives\n{LEARNING_OBJECTIVES}",
+                        ],
                     },
-                    "correct": "C",
-                    "explanation": (
-                        "Correct. Generative AI is a pattern recognition and prediction engine. "
-                        "Because it predicts likely answers rather than understanding truth, teacher review is essential."
-                    ),
-                    "hint": (
-                        "Think about how AI operates under the hood: it mathematically analyzes patterns and calculates "
-                        "probabilities from vast text data, rather than having conscious thoughts or browsing a fixed book index."
-                    ),
-                },
+                    {
+                        "step_index": 1,
+                        "title": "Section 1: What is Artificial Intelligence?",
+                        "image_file": "mod1_obj.jpg",
+                        "texts": [
+                            "Section 1: What is Artificial Intelligence?",
+                        ],
+                        "question": "Q: What is AI?",
+                        "prompt_note": "Take a moment to write what AI means to you below, or tap Continue:",
+                        "model_answer": (
+                            "A: Artificial Intelligence (AI) is a technology that enables computers and machines "
+                            "to perform tasks that normally require human intelligence, such as learning from information, "
+                            "recognizing patterns, understanding language and generating content."
+                        ),
+                    },
+                    {
+                        "step_index": 2,
+                        "title": "Section 1: Artificial Intelligence in Everyday Life",
+                        "image_file": "mod1_everyday_ai.jpg",
+                        "texts": [
+                            "Section 1: Artificial Intelligence\n\n"
+                            "Example of AI in Everyday Life: Artificial Intelligence (AI) is already part of our everyday lives. "
+                            "It helps us perform tasks more easily, find information, communicate, and make decisions. "
+                            "For example, smartphones recognize our voices, Google Maps suggests routes, translation tools translate "
+                            "languages, ChatGPT answers questions, and some systems recognize faces in photographs. "
+                            "These examples show how AI makes everyday activities easier, faster, and more convenient."
+                        ],
+                        "question": "Q: For what purposes do you use AI in your daily life?",
+                        "prompt_note": "Type your answer below, or tap Continue to proceed:",
+                        "feedback": (
+                            "Thank you for sharing! AI tools are already part of our everyday lives, making activities "
+                            "easier, faster, and more convenient."
+                        ),
+                    },
+                    {
+                        "step_index": 3,
+                        "title": "Section 2: Overview of AI in Education",
+                        "image_files": ["mod1_education.jpg", "mod1_opportunities.jpg"],
+                        "texts": [
+                            "Section 2: Overview of AI in Education\n\n"
+                            "Artificial Intelligence (AI) is changing how teachers teach, how students learn, and how schools are managed. "
+                            "It can help teachers prepare lesson plans, develop learning materials, create assessments, and provide feedback. "
+                            "It can also support students through personalized learning, explanations, and access to educational resources. "
+                            "For school leaders, AI can help organize information, analyze school data, and support decision-making. "
+                            "When used responsibly, AI can make education more engaging, inclusive, and effective."
+                        ],
+                    },
+                ],
+                "closing": MODULE_1_CLOSING,
+                "body": [
+                    "Section 1: What is Artificial Intelligence?\n\n"
+                    "Artificial Intelligence (AI) is a technology that enables computers and machines to perform tasks "
+                    "that normally require human intelligence, such as learning from information, recognizing patterns, "
+                    "understanding language and generating content.",
+                    "Section 1: Examples of AI in Everyday Life:\n"
+                    "Smartphones recognize our voices, Google Maps suggests routes, translation tools translate languages, "
+                    "ChatGPT answers questions, and systems recognize faces in photographs.",
+                    "Section 2: Overview of AI in Education:\n"
+                    "AI helps teachers prepare lesson plans, develop learning materials, create assessments, and provide feedback. "
+                    "It also supports personalized learning and school management.",
+                ],
+                "quiz": [
+                    {
+                        "id": "q1",
+                        "question": "1. What is Artificial Intelligence?",
+                        "options": {
+                            "A": "A computer programming language",
+                            "B": "Technology that enables computers to perform tasks requiring human-like intelligence",
+                            "C": "A type of internet connection",
+                        },
+                        "correct": "B",
+                        "explanation": (
+                            "Correct! Artificial Intelligence is technology that enables computers and machines "
+                            "to perform tasks requiring human-like intelligence."
+                        ),
+                        "hint": (
+                            "Think about what defines AI: it is not just programming or an internet connection, "
+                            "but technology that performs tasks normally requiring human intelligence."
+                        ),
+                    },
+                    {
+                        "id": "q2",
+                        "question": "2. Which of the following is an example of Generative AI?",
+                        "options": {
+                            "A": "ChatGPT generating a lesson plan",
+                            "B": "A calculator adding numbers",
+                            "C": "A light switch turning on",
+                        },
+                        "correct": "A",
+                        "explanation": (
+                            "Correct! Generative AI creates new content, such as ChatGPT generating lesson plans, "
+                            "reading passages, or quizzes."
+                        ),
+                        "hint": (
+                            "Generative AI creates and produces new text or content, unlike standard calculators or simple light switches."
+                        ),
+                    },
+                    {
+                        "id": "q3",
+                        "question": "3. Can AI-generated information always be trusted?",
+                        "options": {
+                            "A": "Yes, always",
+                            "B": "No, teachers must verify it",
+                            "C": "Only information written in English",
+                        },
+                        "correct": "B",
+                        "explanation": (
+                            "Correct! AI can sometimes make mistakes or produce inaccurate information. "
+                            "Teachers must always verify and review AI outputs."
+                        ),
+                        "hint": (
+                            "Remember the core teacher responsibility: AI can hallucinate or make errors, "
+                            "so educators must always check and verify content."
+                        ),
+                    },
+                ],
             },
 
             # ---------------------------------------------------------------
@@ -406,11 +523,23 @@ def get_lesson(unit_id: str = DEFAULT_UNIT_ID, lesson_index_or_id: Any = 0) -> O
     return None
 
 
-def get_quiz(unit_id: str = DEFAULT_UNIT_ID, lesson_index_or_id: Any = 0) -> Optional[dict]:
+def get_quiz_questions(unit_id: str = DEFAULT_UNIT_ID, lesson_index_or_id: Any = 0) -> List[dict]:
     lesson = get_lesson(unit_id, lesson_index_or_id)
     if not lesson:
-        return None
-    return lesson.get("quiz")
+        return []
+    quiz = lesson.get("quiz")
+    if isinstance(quiz, list):
+        return quiz
+    elif isinstance(quiz, dict):
+        return [quiz]
+    return []
+
+
+def get_quiz(unit_id: str = DEFAULT_UNIT_ID, lesson_index_or_id: Any = 0, question_idx: int = 0) -> Optional[dict]:
+    questions = get_quiz_questions(unit_id, lesson_index_or_id)
+    if 0 <= question_idx < len(questions):
+        return questions[question_idx]
+    return None
 
 
 def total_lessons(unit_id: str = DEFAULT_UNIT_ID) -> int:
@@ -420,18 +549,18 @@ def total_lessons(unit_id: str = DEFAULT_UNIT_ID) -> int:
     return len(unit.get("lessons", []))
 
 
-def is_valid_option(unit_id: str, lesson_id: Any, option: str) -> bool:
-    quiz = get_quiz(unit_id, lesson_id)
+def is_valid_option(unit_id: str, lesson_id: Any, option: str, question_idx: int = 0) -> bool:
+    quiz = get_quiz(unit_id, lesson_id, question_idx)
     if not quiz:
         return False
     clean = option.strip().upper()
     return clean in quiz["options"] or option.strip() in quiz["options"]
 
 
-def check_answer(unit_id: str, lesson_id: Any, selected: str) -> dict:
-    quiz = get_quiz(unit_id, lesson_id)
+def check_answer(unit_id: str, lesson_id: Any, selected: str, question_idx: int = 0) -> dict:
+    quiz = get_quiz(unit_id, lesson_id, question_idx)
     if not quiz:
-        raise ValueError(f"No quiz found for unit={unit_id!r} lesson={lesson_id!r}")
+        raise ValueError(f"No quiz found for unit={unit_id!r} lesson={lesson_id!r} idx={question_idx}")
     clean = selected.strip().upper()
     correct_answer = quiz["correct"]
     is_correct = (clean == correct_answer) or (selected.strip() == correct_answer)
@@ -444,11 +573,14 @@ def check_answer(unit_id: str, lesson_id: Any, selected: str) -> dict:
 
 
 def quiz_as_context(unit_id: str, lesson_id: Any) -> str:
-    quiz = get_quiz(unit_id, lesson_id)
-    if not quiz:
+    questions = get_quiz_questions(unit_id, lesson_id)
+    if not questions:
         return ""
-    options = "; ".join(f"{key}) {text}" for key, text in quiz["options"].items())
-    return f"QUIZ QUESTION: {quiz['question']}\nOPTIONS: {options}"
+    blocks = []
+    for q in questions:
+        options = "; ".join(f"{key}) {text}" for key, text in q["options"].items())
+        blocks.append(f"QUIZ QUESTION: {q['question']}\nOPTIONS: {options}")
+    return "\n\n".join(blocks)
 
 
 def lesson_as_context(unit_id: str, lesson_id: Any) -> str:

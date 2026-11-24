@@ -18,6 +18,9 @@ IDLE_STATE = {
     "phase": "idle",
     "unit_id": curriculum.DEFAULT_UNIT_ID,
     "lesson_index": 0,
+    "step_index": 0,
+    "quiz_question_idx": 0,
+    "awaiting_response": None,
     "completed_lessons": [],
     "quiz_answers": {},
     "tutor_resume": None,
@@ -109,6 +112,9 @@ def start_unit(wa_id: str, unit_id: str = None, restart: bool = False) -> dict:
         "phase": "lesson",
         "unit_id": unit_id,
         "lesson_index": 0 if restart or state.get("lesson_index") is None else state.get("lesson_index", 0),
+        "step_index": 0 if restart else state.get("step_index", 0),
+        "quiz_question_idx": 0,
+        "awaiting_response": None,
         "tutor_resume": None,
         "tutor_lesson": None,
         "assessment_index": None,
@@ -117,6 +123,8 @@ def start_unit(wa_id: str, unit_id: str = None, restart: bool = False) -> dict:
         state["completed_lessons"] = []
         state["quiz_answers"] = {}
         state["lesson_index"] = 0
+        state["step_index"] = 0
+        state["quiz_question_idx"] = 0
 
     set_state(wa_id, state)
     event_name = "course_restarted" if restart else "course_enrolled"
@@ -157,23 +165,25 @@ def open_quiz(wa_id: str) -> dict:
     return state
 
 
-def record_quiz_result(wa_id: str, lesson_id: str, answer: str, correct: bool) -> None:
+def record_quiz_result(wa_id: str, lesson_id: str, answer: str, correct: bool, question_idx: int = 0) -> None:
     """Record user's quiz submission in state and database activity log."""
     state = get_state(wa_id)
     quizzes = state.get("quiz_answers") or {}
-    quizzes[lesson_id] = {
+    key = f"{lesson_id}_q{question_idx + 1}" if question_idx > 0 else lesson_id
+    quizzes[key] = {
         "answer": answer,
         "correct": correct,
+        "question_idx": question_idx,
     }
     state["quiz_answers"] = quizzes
     set_state(wa_id, state)
     status_label = "Correct" if correct else "Incorrect"
-    db.log_activity(wa_id, "quiz_answered", f"{lesson_id}: Option {answer} ({status_label})")
+    db.log_activity(wa_id, "quiz_answered", f"{lesson_id} (Q{question_idx + 1}): Option {answer} ({status_label})")
 
 
 def advance_past_lesson(wa_id: str):
     """
-    Called after passing a quiz. Marks current lesson as completed and advances.
+    Called after passing all quiz questions for a lesson. Marks current lesson as completed and advances.
     """
     state = get_state(wa_id)
     unit_id = state.get("unit_id") or curriculum.DEFAULT_UNIT_ID
@@ -191,14 +201,26 @@ def advance_past_lesson(wa_id: str):
     next_index = current_idx + 1
 
     if next_index < len(lesson_ids):
-        state.update({"lesson_index": next_index, "phase": "lesson"})
+        state.update({
+            "lesson_index": next_index,
+            "step_index": 0,
+            "quiz_question_idx": 0,
+            "awaiting_response": None,
+            "phase": "lesson"
+        })
         set_state(wa_id, state)
         next_les = curriculum.get_lesson(unit_id, lesson_ids[next_index])
         db.log_activity(wa_id, "lesson_advanced", f"Advanced to {next_les['title']} ({next_index+1}/{len(lesson_ids)})")
         return "lesson", next_les
 
     # Course completed!
-    state.update({"phase": "complete", "lesson_index": len(lesson_ids)})
+    state.update({
+        "phase": "complete",
+        "lesson_index": len(lesson_ids),
+        "step_index": 0,
+        "quiz_question_idx": 0,
+        "awaiting_response": None
+    })
     set_state(wa_id, state)
     db.log_activity(wa_id, "course_completed", f"Completed all {len(lesson_ids)} modules in {unit_id}!")
     return "complete", None

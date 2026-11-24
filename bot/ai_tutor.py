@@ -57,32 +57,32 @@ def _get_gemini_api_key() -> Optional[str]:
 
 
 def _build_system_instruction(section: str = "", module_title: str = "") -> str:
-    current_module_label = module_title.strip() if module_title else "AI for Teaching and Learning"
-    clean_context = section.strip() if section else "Practical Ethiopian classroom AI pedagogy"
+    current_module_label = module_title.strip() if module_title else "Introduction to AI for Teachers in Ethiopia"
+    clean_context = section.strip() if section else "General Course Curriculum"
 
-    return f"""You are the friendly, expert WhatsApp AI Pedagogical Tutor for Ethiopian educators taking the course: "AI for Teaching and Learning".
-You are conversing directly with a teacher via WhatsApp.
+    # Simplified, friendly AI tutor prompt without restrictive guardrails
+    return f"""You are a helpful and friendly AI Tutor for Ethiopian primary and secondary school teachers taking the course: "Introduction to Artificial Intelligence (AI) for Teachers in Ethiopia".
 
-ACTIVE MODULE:
-{current_module_label}
+Context:
+- Current Module: {current_module_label}
+- Lesson Context: {clean_context}
 
-LESSON CONTEXT:
-{clean_context}
-
-CRITICAL RESPONSE FORMAT RULES:
-1. Output ONLY your direct conversational message to the teacher.
-2. Structure your reply in exactly three parts:
-   - Part 1: Exactly ONE concise introductory paragraph (2-3 sentences) directly explaining the core concept.
-   - Part 2: Exactly 2 or 3 bullet points (* ) providing practical, low-resource classroom strategies for Ethiopian schools (such as chalkboard delivery, large class sizes, or offline preparation).
-   - Part 3: Exactly ONE short, encouraging concluding sentence.
-3. Total word count must be under 125 words. Plain text only.
-4. Do NOT include planning notes, meta-talk, prompt reflections, or outlines. Start your response immediately with your direct explanation.
-
-OFF-TOPIC GUARDRAIL:
-If the user asks questions completely unrelated to education or teaching (e.g., sports, celebrity gossip, politics, or entertainment):
-Politely reply:
-"I am your AI Tutor dedicated to the 'AI for Teaching and Learning' course. I can only assist with pedagogical strategies and your current module ({current_module_label}). Feel free to ask any question about this lesson or how to use AI in your classroom!"
+Guidelines:
+- Answer the teacher's question directly, clearly, and conversationally.
+- Be warm, encouraging, practical, and helpful.
+- Keep your answers concise, easy to understand, and formatted cleanly for mobile reading on WhatsApp.
 """
+
+    # --- Previous strict guardrails commented out as requested ---
+    # CRITICAL RESPONSE FORMAT RULES:
+    # 1. Output ONLY your direct conversational message to the teacher.
+    # 2. Structure your reply in exactly three parts:
+    #    - Part 1: Exactly ONE concise introductory paragraph (2-3 sentences) directly explaining the core concept.
+    #    - Part 2: Exactly 2 or 3 bullet points (* ) providing practical, low-resource classroom strategies for Ethiopian schools
+    #    - Part 3: Exactly ONE short, encouraging concluding sentence.
+    # OFF-TOPIC GUARDRAIL:
+    # If the user asks questions completely unrelated to education or teaching:
+    # Politely reply: "I am your AI Tutor dedicated to the 'AI for Teaching and Learning' course..."
 
 
 # ---------------------------------------------------------------------------
@@ -91,12 +91,14 @@ Politely reply:
 
 MODULE_CURATED_EXPLANATIONS = {
     1: (
-        "In Module 1, we learn that Generative AI is a statistical pattern-prediction assistant rather than a conscious mind. "
-        "Because it predicts likely answers rather than understanding truth, the teacher must always serve as the final editor and pedagogical authority.\n\n"
-        "* The Teacher as Editor: Always review, adapt, and verify every AI draft against Ethiopian curriculum standards before sharing it with students.\n"
-        "* Practical Categories: Use text chatbots to draft lesson outlines, visual generators for chalkboard diagrams, and audio tools for pronunciation.\n"
-        "* Low-Resource Delivery: Generate ideas on your smartphone during connectivity periods, then write the finalized activities on the blackboard.\n\n"
-        "AI provides the initial draft, but your professional judgment creates meaningful learning."
+        "In Module 1, we learn about Understanding Artificial Intelligence (AI). "
+        "AI is a technology that enables computers and machines to perform tasks that normally require "
+        "human intelligence, such as learning from information, recognizing patterns, understanding language, "
+        "and generating content.\n\n"
+        "AI is already part of our daily lives through voice recognition on phones, Google Maps navigation, "
+        "language translation tools, face recognition, and tools like ChatGPT. In education, AI helps teachers "
+        "prepare lesson plans, create materials, and generate assessments, while supporting personalized learning for students.\n\n"
+        "Remember, AI is a tool to support your work—not to replace your creativity and professional judgment as an educator!"
     ),
     2: (
         "In Module 2, we introduce the 5-Part Teacher Prompt Formula to transform generic AI responses into highly practical classroom resources. "
@@ -357,8 +359,6 @@ def clean_ai_output(t: str, fallback_fn=None) -> str:
     Sanitize model output:
     1. Strips <thought>...</thought> tags if present.
     2. Strips Markdown headers.
-    3. Detects prompt echoes, scratchpads, and meta-talk.
-    4. Extracts clean final response if present, or seamlessly invokes fallback_fn.
     """
     if not t:
         return fallback_fn() if fallback_fn else ""
@@ -372,38 +372,17 @@ def clean_ai_output(t: str, fallback_fn=None) -> str:
     # Strip markdown headers (##, ###, etc.)
     t = re.sub(r"^\s*#{1,6}\s*", "", t, flags=re.MULTILINE).strip()
 
-    # Check for trivial title echo or overly short response
-    if t.lower().strip() in (
-        "ai for teaching and learning",
-        "ai for teaching and learning (ethiopian educators edition)",
-        "module 1: ai basics and the teacher as editor",
-    ) or len(t) < 40:
-        return fallback_fn() if fallback_fn else ""
-
-    # Check if text contains scratchpad meta-talk or prompt echo
-    has_meta = any(re.search(pat, t, re.MULTILINE | re.IGNORECASE) for pat in META_PATTERNS)
-
-    if has_meta:
-        # 1. Look for 'Draft 1:' or 'Drafting:' or 'Final Response:' followed by real text
-        draft_match = re.search(r'(?:Draft\s*\d*|Drafting|Final Response):\s*(.*?)(?=\n\s*\*|\Z)', t, flags=re.DOTALL | re.IGNORECASE)
-        if draft_match:
-            candidate = draft_match.group(1).strip().strip('"')
-            if len(candidate) > 60 and not any(re.search(pat, candidate, re.IGNORECASE) for pat in META_PATTERNS):
-                if not candidate.endswith(("...", "(", "<")):
-                    return candidate
-
-        # 2. Look for the last quoted multi-sentence paragraph
-        quotes = re.findall(r'"([A-Z][^"]{60,})"', t, flags=re.DOTALL)
-        if quotes:
-            candidate = quotes[-1].strip().strip('"')
-            if not any(re.search(pat, candidate, re.IGNORECASE) for pat in META_PATTERNS):
-                if not candidate.endswith(("...", "(", "<")):
-                    return candidate
-
-        # 3. If there is no clean, complete draft, fall back to the curated knowledge base
-        return fallback_fn() if fallback_fn else ""
-
     return t
+
+    # --- Previous heavy meta-pattern filtering commented out as requested ---
+    # has_meta = any(re.search(pat, t, re.MULTILINE | re.IGNORECASE) for pat in META_PATTERNS)
+    # if has_meta:
+    #     draft_match = re.search(r'(?:Draft\s*\d*|Drafting|Final Response):\s*(.*?)(?=\n\s*\*|\Z)', t, flags=re.DOTALL | re.IGNORECASE)
+    #     if draft_match:
+    #         candidate = draft_match.group(1).strip().strip('"')
+    #         if len(candidate) > 60 and not any(re.search(pat, candidate, re.IGNORECASE) for pat in META_PATTERNS):
+    #             return candidate
+    #     return fallback_fn() if fallback_fn else ""
 
 
 async def _call_gemini_fast(question: str, section: str, module_title: str) -> Optional[str]:

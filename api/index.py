@@ -52,6 +52,8 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "local-test")
 # --- Button ids --------------------------------------------------------------
 ENROLL = "enroll"
 RESUME = "resume_course"
+STEP_CONTINUE = "step_continue"
+NEXT_STEP = "next_step"
 RESTART = "restart_course"
 ASK_TUTOR = "ask_ai_tutor"
 ASSESS = "ai_assess"
@@ -450,13 +452,59 @@ async def handle_text(wa_id: str, raw: str) -> None:
                 await deliver_lesson(wa_id, lesson)
             return
 
+    # lesson phase: check if learner is responding to an interactive reflection question
+    if phase == "lesson":
+        awaiting = cur.get("awaiting_response")
+        if awaiting == "what_is_ai":
+            cur["awaiting_response"] = None
+            state.set_state(wa_id, cur)
+            db.log_activity(wa_id, "interactive_response", f"What is AI: {text[:60]}")
+            model_ans = (
+                "A: Artificial Intelligence (AI) is a technology that enables computers and machines "
+                "to perform tasks that normally require human intelligence, such as learning from information, "
+                "recognizing patterns, understanding language and generating content."
+            )
+            await whatsapp.send_text(wa_id, model_ans)
+            await asyncio.sleep(0.4)
+            await whatsapp.send_buttons(
+                wa_id,
+                "Ready to continue to everyday AI examples?",
+                [
+                    {"id": STEP_CONTINUE, "title": "Continue"},
+                    {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
+                ],
+                footer="Tap Continue to proceed",
+            )
+            return
+
+        if awaiting == "everyday_ai_use":
+            cur["awaiting_response"] = None
+            state.set_state(wa_id, cur)
+            db.log_activity(wa_id, "interactive_response", f"Everyday AI: {text[:60]}")
+            feedback = (
+                "Thank you for sharing! AI tools are already part of our everyday lives, making activities "
+                "easier, faster, and more convenient."
+            )
+            await whatsapp.send_text(wa_id, feedback)
+            await asyncio.sleep(0.4)
+            await whatsapp.send_buttons(
+                wa_id,
+                "Ready for Section 2 (AI in Education)?",
+                [
+                    {"id": STEP_CONTINUE, "title": "Continue"},
+                    {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
+                ],
+                footer="Tap Continue to proceed",
+            )
+            return
+
     # lesson or resume shortcuts
     if low in LESSON_GO:
         if phase == "quiz":
             await send_quiz(wa_id)
             return
         elif phase == "lesson":
-            await send_quiz(wa_id)
+            await advance_module_step(wa_id)
             return
         else:
             # User was idle or stepped away, resume where they left off!
@@ -480,18 +528,23 @@ async def handle_text(wa_id: str, raw: str) -> None:
 async def handle_button_click(wa_id: str, button_id: str) -> None:
     db.log_activity(wa_id, "button_click", button_id)
 
-    if button_id in (ENROLL, RESUME):
+    if button_id in (ENROLL, RESUME, STEP_CONTINUE, NEXT_STEP, "continue", "next"):
         cur = state.get_state(wa_id)
 
         # If already completed all modules, inform learner and do not loop on continue!
         if state.is_course_complete(cur):
             await whatsapp.send_text(
                 wa_id,
-                "You have already finished all 7 modules of this course! Excellent work.\n\n"
+                "You have already finished all modules of this course! Excellent work.\n\n"
                 "There are no further modules to continue. You can ask the AI Tutor questions "
                 "or review and restart the course below:",
             )
             await send_menu(wa_id, fresh=False)
+            return
+
+        phase = cur.get("phase")
+        if phase == "lesson" and button_id in (STEP_CONTINUE, NEXT_STEP, "continue", "next"):
+            await advance_module_step(wa_id)
             return
 
         lesson_idx = cur.get("lesson_index", 0)
@@ -670,6 +723,181 @@ async def send_menu(wa_id: str, fresh: bool = True) -> None:
 # ---------------------------------------------------------------------------
 # Course delivery (Video & Picture-First Methodology)
 # ---------------------------------------------------------------------------
+async def deliver_step(wa_id: str, lesson: dict, step_idx: int) -> None:
+    cur = state.get_state(wa_id)
+    steps = lesson.get("steps", [])
+    if not (0 <= step_idx < len(steps)):
+        cur["phase"] = "quiz"
+        cur["quiz_question_idx"] = 0
+        state.set_state(wa_id, cur)
+        await send_quiz(wa_id)
+        return
+
+    step = steps[step_idx]
+
+    if step_idx == 0:
+        # Step 0: Course Intro and Objectives
+        for t in step.get("texts", []):
+            await whatsapp.send_text(wa_id, t)
+            await asyncio.sleep(0.3)
+        await whatsapp.send_buttons(
+            wa_id,
+            "Ready to begin Section 1?",
+            [
+                {"id": STEP_CONTINUE, "title": "Continue"},
+                {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
+            ],
+            footer="Tap Continue to proceed",
+        )
+        return
+
+    if step_idx == 1:
+        # Step 1: Section 1: What is AI?
+        img = step.get("image_file")
+        if img:
+            try:
+                i_url = get_public_media_url(img)
+                await whatsapp.send_media(wa_id, "image", i_url, caption="Section 1: What is Artificial Intelligence?")
+                await asyncio.sleep(0.4)
+            except Exception as e:
+                logger.warning("Failed to send image for step 1: %s", e)
+
+        q_text = step.get("question", "Q: What is AI?")
+        note = step.get("prompt_note", "Take a moment to write what AI means to you below, or tap Continue:")
+        await whatsapp.send_text(wa_id, f"{q_text}\n\n{note}")
+        await asyncio.sleep(0.3)
+
+        cur["awaiting_response"] = "what_is_ai"
+        cur["step_index"] = 1
+        state.set_state(wa_id, cur)
+
+        await whatsapp.send_buttons(
+            wa_id,
+            "Type your response or tap Continue:",
+            [
+                {"id": STEP_CONTINUE, "title": "Continue"},
+                {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
+            ],
+            footer="Answer or tap Continue",
+        )
+        return
+
+    if step_idx == 2:
+        # Step 2: Section 1: Everyday AI
+        for t in step.get("texts", []):
+            await whatsapp.send_text(wa_id, t)
+            await asyncio.sleep(0.3)
+
+        img = step.get("image_file")
+        if img:
+            try:
+                i_url = get_public_media_url(img)
+                await whatsapp.send_media(wa_id, "image", i_url, caption="Simple Examples of AI in Everyday Life")
+                await asyncio.sleep(0.4)
+            except Exception as e:
+                logger.warning("Failed to send image for step 2: %s", e)
+
+        q_text = step.get("question", "Q: For what purposes do you use AI in your daily life?")
+        note = step.get("prompt_note", "Type your answer below, or tap Continue to proceed:")
+        await whatsapp.send_text(wa_id, f"{q_text}\n\n{note}")
+        await asyncio.sleep(0.3)
+
+        cur["awaiting_response"] = "everyday_ai_use"
+        cur["step_index"] = 2
+        state.set_state(wa_id, cur)
+
+        await whatsapp.send_buttons(
+            wa_id,
+            "Type your response or tap Continue:",
+            [
+                {"id": STEP_CONTINUE, "title": "Continue"},
+                {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
+            ],
+            footer="Answer or tap Continue",
+        )
+        return
+
+    if step_idx == 3:
+        # Step 3: Section 2: Overview of AI in Education
+        for t in step.get("texts", []):
+            await whatsapp.send_text(wa_id, t)
+            await asyncio.sleep(0.3)
+
+        img_list = step.get("image_files", [])
+        captions = ["AI in Education", "Opportunities and Limitations of AI"]
+        for idx, im in enumerate(img_list):
+            try:
+                i_url = get_public_media_url(im)
+                cap = captions[idx] if idx < len(captions) else "AI in Education"
+                await whatsapp.send_media(wa_id, "image", i_url, caption=cap)
+                await asyncio.sleep(0.4)
+            except Exception as e:
+                logger.warning("Failed to send image for step 3: %s", e)
+
+        cur["awaiting_response"] = None
+        cur["step_index"] = 3
+        state.set_state(wa_id, cur)
+
+        await whatsapp.send_buttons(
+            wa_id,
+            "Module 1 sections complete! Ready to start the quiz?",
+            [
+                {"id": READY_QUIZ, "title": "Start Quiz"},
+                {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
+            ],
+            footer="Test your knowledge or ask a question",
+        )
+        return
+
+
+async def advance_module_step(wa_id: str) -> None:
+    cur = state.get_state(wa_id)
+    unit_id = cur.get("unit_id") or curriculum.DEFAULT_UNIT_ID
+    lesson = state.current_lesson(cur)
+    if not lesson:
+        await recover_or_start(wa_id)
+        return
+
+    steps = lesson.get("steps")
+    if not steps:
+        # Fallback for standard lesson without steps
+        cur["phase"] = "quiz"
+        state.set_state(wa_id, cur)
+        await send_quiz(wa_id)
+        return
+
+    step_idx = cur.get("step_index", 0)
+    awaiting = cur.get("awaiting_response")
+
+    # If user tapped Continue while awaiting What is AI, deliver model answer first
+    if awaiting == "what_is_ai":
+        cur["awaiting_response"] = None
+        state.set_state(wa_id, cur)
+        model_ans = (
+            "A: Artificial Intelligence (AI) is a technology that enables computers and machines "
+            "to perform tasks that normally require human intelligence, such as learning from information, "
+            "recognizing patterns, understanding language and generating content."
+        )
+        await whatsapp.send_text(wa_id, model_ans)
+        await asyncio.sleep(0.4)
+
+    if awaiting == "everyday_ai_use":
+        cur["awaiting_response"] = None
+        state.set_state(wa_id, cur)
+
+    next_step = step_idx + 1
+    if next_step < len(steps):
+        cur["step_index"] = next_step
+        state.set_state(wa_id, cur)
+        await deliver_step(wa_id, lesson, next_step)
+    else:
+        # All sections viewed -> go to quiz
+        cur["phase"] = "quiz"
+        cur["quiz_question_idx"] = 0
+        state.set_state(wa_id, cur)
+        await send_quiz(wa_id)
+
+
 async def deliver_lesson(wa_id: str, lesson) -> None:
     if lesson is None:
         await recover_or_start(wa_id)
@@ -677,7 +905,14 @@ async def deliver_lesson(wa_id: str, lesson) -> None:
 
     db.log_activity(wa_id, "lesson_viewed", lesson.get("title", ""))
 
-    # 1. Chopped video clip first (Primary learning medium)
+    cur = state.get_state(wa_id)
+    steps = lesson.get("steps")
+    if steps:
+        step_idx = cur.get("step_index", 0)
+        await deliver_step(wa_id, lesson, step_idx)
+        return
+
+    # Standard video & picture delivery for modules without steps
     video_file = lesson.get("video_file")
     if video_file:
         try:
@@ -697,7 +932,6 @@ async def deliver_lesson(wa_id: str, lesson) -> None:
         await whatsapp.send_text(wa_id, lesson["title"])
         await asyncio.sleep(0.4)
 
-    # 2. Visual diagram / slide frame
     image_file = lesson.get("image_file")
     if image_file:
         try:
@@ -712,13 +946,10 @@ async def deliver_lesson(wa_id: str, lesson) -> None:
         except Exception as img_err:
             logger.warning("Could not send lesson image: %s", img_err)
 
-    # 3. Concise instructional summary points
     for paragraph in lesson.get("body", []):
         await whatsapp.send_text(wa_id, paragraph)
         await asyncio.sleep(0.3)
 
-    # 4. Next step buttons
-    # 4. Next step buttons
     await whatsapp.send_buttons(
         wa_id,
         "Module complete - choose an option below:",
@@ -731,7 +962,7 @@ async def deliver_lesson(wa_id: str, lesson) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Quiz
+# Quiz (Multi-question support with hints)
 # ---------------------------------------------------------------------------
 async def send_quiz(wa_id: str) -> None:
     cur = state.get_state(wa_id)
@@ -741,8 +972,9 @@ async def send_quiz(wa_id: str) -> None:
         await recover_or_start(wa_id)
         return
 
-    quiz = curriculum.get_quiz(cur.get("unit_id") or curriculum.DEFAULT_UNIT_ID, lesson["id"])
-    if not quiz:
+    unit_id = cur.get("unit_id") or curriculum.DEFAULT_UNIT_ID
+    quiz_questions = curriculum.get_quiz_questions(unit_id, lesson["id"])
+    if not quiz_questions:
         await whatsapp.send_text(wa_id, "No quiz for this lesson. Moving forward:")
         outcome, next_lesson = state.advance_past_lesson(wa_id)
         if outcome == "lesson":
@@ -751,16 +983,29 @@ async def send_quiz(wa_id: str) -> None:
             await send_menu(wa_id, fresh=False)
         return
 
+    q_idx = cur.get("quiz_question_idx", 0)
+    if q_idx >= len(quiz_questions):
+        q_idx = 0
+        cur["quiz_question_idx"] = 0
+        state.set_state(wa_id, cur)
+
+    quiz = quiz_questions[q_idx]
+    total_q = len(quiz_questions)
+
     options = quiz["options"]
     body = quiz["question"]
     for key in options:
         body += f"\n\n{key}) {options[key]}"
 
+    header_label = f"Quiz ({q_idx + 1}/{total_q}) - {lesson['title']}"
+    if len(header_label) > 60:
+        header_label = f"Quiz ({q_idx + 1}/{total_q})"
+
     await whatsapp.send_buttons(
         wa_id,
         body,
         [{"id": f"{ANSWER_PREFIX}{key}", "title": key} for key in options],
-        header=f"Quiz - {lesson['title']}",
+        header=header_label,
         footer="Tap an option",
     )
     state.open_quiz(wa_id)
@@ -776,22 +1021,51 @@ async def handle_quiz_answer(wa_id: str, answer: str) -> None:
 
     unit_id = cur.get("unit_id") or curriculum.DEFAULT_UNIT_ID
     lesson_id = lesson["id"]
+    quiz_questions = curriculum.get_quiz_questions(unit_id, lesson_id)
+    q_idx = cur.get("quiz_question_idx", 0)
 
-    if not curriculum.is_valid_option(unit_id, lesson_id, answer):
-        quiz = curriculum.get_quiz(unit_id, lesson_id)
+    if not curriculum.is_valid_option(unit_id, lesson_id, answer, question_idx=q_idx):
+        quiz = curriculum.get_quiz(unit_id, lesson_id, question_idx=q_idx)
         opts_hint = ", ".join(quiz["options"].keys()) if quiz else "your choice"
         await whatsapp.send_text(wa_id, f"Please tap {opts_hint} below.")
         await send_quiz(wa_id)
         return
 
-    result = curriculum.check_answer(unit_id, lesson_id, answer)
+    result = curriculum.check_answer(unit_id, lesson_id, answer, question_idx=q_idx)
     explanation = result["explanation"]
 
     # Record result in state and activity log
-    state.record_quiz_result(wa_id, lesson_id, answer, result["correct"])
+    state.record_quiz_result(wa_id, lesson_id, answer, result["correct"], question_idx=q_idx)
 
     if result["correct"]:
-        await whatsapp.send_text(wa_id, f"Correct! {explanation} Moving on to the next module.")
+        total_q = len(quiz_questions)
+        next_q = q_idx + 1
+        if next_q < total_q:
+            cur["quiz_question_idx"] = next_q
+            state.set_state(wa_id, cur)
+            await whatsapp.send_text(
+                wa_id,
+                f"Correct! {explanation}\n\nMoving to Question {next_q + 1} of {total_q}:",
+            )
+            await asyncio.sleep(0.4)
+            await send_quiz(wa_id)
+            return
+        else:
+            # All questions in this module completed!
+            await whatsapp.send_text(wa_id, f"Correct! {explanation}")
+            await asyncio.sleep(0.4)
+
+            # Module closing message
+            closing_msg = lesson.get("closing") or curriculum.MODULE_1_CLOSING
+            await whatsapp.send_text(wa_id, closing_msg)
+            await asyncio.sleep(0.5)
+
+            outcome, next_lesson = state.advance_past_lesson(wa_id)
+            if outcome == "lesson":
+                await deliver_lesson(wa_id, next_lesson)
+            else:
+                await send_menu(wa_id, fresh=False)
+            return
     else:
         hint_msg = result.get("hint") or "Review the lesson materials and key principles, then try again."
         await whatsapp.send_text(
@@ -800,14 +1074,6 @@ async def handle_quiz_answer(wa_id: str, answer: str) -> None:
         )
         await send_quiz(wa_id)
         return
-
-    outcome, next_lesson = state.advance_past_lesson(wa_id)
-    if outcome == "lesson":
-        await deliver_lesson(wa_id, next_lesson)
-    else:
-        unit = curriculum.get_unit(unit_id)
-        await whatsapp.send_text(wa_id, unit["complete_message"])
-        await send_menu(wa_id, fresh=False)
 
 
 # ---------------------------------------------------------------------------

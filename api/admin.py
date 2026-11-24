@@ -365,7 +365,9 @@ async def export_users_csv(request: Request):
         "Assessment Q2: Classroom Confidence",
         "Assessment Q3: Primary Constraint",
         "Assessment Q4: Main Course Goal",
-        "Module 1 Quiz (AI Basics)",
+        "Module 1 Q1 (What is AI)",
+        "Module 1 Q2 (Generative AI Example)",
+        "Module 1 Q3 (Can AI Be Trusted)",
         "Module 2 Quiz (Prompt Formula)",
         "Module 3 Quiz (Offline & Low-Resource)",
         "Module 4 Quiz (Lesson Planning)",
@@ -418,13 +420,50 @@ async def export_users_csv(request: Request):
         q4_opt = assessment_map.get("goal", {}).get("options", {}).get(q4_val, "")
         q4_text = f"{q4_val}: {q4_opt}" if q4_val else "Not answered"
 
-        # Quiz Answers breakdown (Module 1 through 7)
+        # Quiz Answers breakdown (Module 1 Q1, Q2, Q3 and Modules 2-7)
         quizzes = u.get("quiz_answers") or {}
         mod_quiz_cols = []
         correct_count = 0
         attempted_count = 0
 
-        for i in range(1, 8):
+        # Module 1 Q1
+        m1_q1 = quizzes.get("lesson_1_q1") or quizzes.get("lesson_1")
+        if m1_q1:
+            attempted_count += 1
+            if m1_q1.get("correct"):
+                correct_count += 1
+                mod_quiz_cols.append(f"{m1_q1.get('answer', '')} (Correct)")
+            else:
+                mod_quiz_cols.append(f"{m1_q1.get('answer', '')} (Incorrect)")
+        else:
+            mod_quiz_cols.append("Not attempted")
+
+        # Module 1 Q2
+        m1_q2 = quizzes.get("lesson_1_q2")
+        if m1_q2:
+            attempted_count += 1
+            if m1_q2.get("correct"):
+                correct_count += 1
+                mod_quiz_cols.append(f"{m1_q2.get('answer', '')} (Correct)")
+            else:
+                mod_quiz_cols.append(f"{m1_q2.get('answer', '')} (Incorrect)")
+        else:
+            mod_quiz_cols.append("Not attempted")
+
+        # Module 1 Q3
+        m1_q3 = quizzes.get("lesson_1_q3")
+        if m1_q3:
+            attempted_count += 1
+            if m1_q3.get("correct"):
+                correct_count += 1
+                mod_quiz_cols.append(f"{m1_q3.get('answer', '')} (Correct)")
+            else:
+                mod_quiz_cols.append(f"{m1_q3.get('answer', '')} (Incorrect)")
+        else:
+            mod_quiz_cols.append("Not attempted")
+
+        # Modules 2 through 7
+        for i in range(2, 8):
             lid = f"lesson_{i}"
             q_res = quizzes.get(lid)
             if q_res:
