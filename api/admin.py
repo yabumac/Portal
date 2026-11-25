@@ -4,6 +4,7 @@ api/admin.py - Modern Enterprise Admin & Analytics Dashboard for EdTech Hub.
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import json
@@ -308,6 +309,64 @@ async def test_whatsapp_endpoint(request: Request):
         return JSONResponse({"success": False, "error": str(e), "hint": "Check phone number format and server logs."})
 
 
+def _format_personalized_message(raw_message: str, phone: str, user: Optional[dict]) -> str:
+    """Replace {phone}, {status}, and {progress} tags for an educator."""
+    u = user or {}
+    phase = u.get("phase", "active")
+    is_grad = phase == "complete" or len(u.get("completed_lessons") or []) >= 1
+    phase_label = "Graduated" if is_grad else phase.capitalize()
+    progress_str = "100%" if is_grad else ("50%" if phase == "quiz" else "0%")
+    return (
+        raw_message
+        .replace("{phone}", phone)
+        .replace("{status}", phase_label)
+        .replace("{progress}", progress_str)
+    )
+
+
+async def _deliver_admin_message(phone: str, body: str, event_prefix: str, context_label: str) -> dict:
+    """
+    Send a custom WhatsApp message to an educator with structured Meta diagnostics
+    and automatic template fallback when WHATSAPP_REENGAGEMENT_TEMPLATE is configured.
+    """
+    from bot import whatsapp
+
+    cleaned_phone = "".join(ch for ch in str(phone) if ch.isdigit()) or phone.strip()
+    try:
+        resp = await whatsapp.send_text(cleaned_phone, body)
+        if resp.status_code < 400:
+            db.log_activity(phone, f"{event_prefix}_sent", f"{context_label}: {body[:60]}")
+            return {"phone": phone, "status": "sent"}
+
+        parsed = whatsapp.parse_meta_error(resp.text)
+        template_name = os.getenv("WHATSAPP_REENGAGEMENT_TEMPLATE", "").strip()
+        template_lang = os.getenv("WHATSAPP_TEMPLATE_LANG", "en_US").strip() or "en_US"
+
+        # If rejected for >24h window and an approved template is configured, dispatch via template
+        if parsed.get("code") == 131047 and template_name:
+            params = None if template_name == "hello_world" else [body[:1024]]
+            t_resp = await whatsapp.send_template(
+                cleaned_phone, template_name, language_code=template_lang, body_params=params
+            )
+            if t_resp.status_code < 400:
+                db.log_activity(phone, f"{event_prefix}_sent", f"{context_label} [template:{template_name}]: {body[:50]}")
+                return {"phone": phone, "status": "sent", "used_template": template_name}
+            parsed = whatsapp.parse_meta_error(t_resp.text)
+
+        err_msg = parsed.get("hint") or parsed.get("message") or f"HTTP {resp.status_code}"
+        db.log_activity(phone, f"{event_prefix}_failed", f"HTTP {resp.status_code}: {err_msg[:80]}")
+        return {
+            "phone": phone,
+            "status": "failed",
+            "code": parsed.get("code"),
+            "error": err_msg,
+            "detail": parsed.get("message"),
+        }
+    except Exception as exc:
+        db.log_activity(phone, f"{event_prefix}_error", str(exc))
+        return {"phone": phone, "status": "failed", "error": str(exc)}
+
+
 @router.post("/api/broadcast")
 async def send_broadcast_endpoint(request: Request):
     if not is_authenticated(request):
@@ -325,8 +384,6 @@ async def send_broadcast_endpoint(request: Request):
         return JSONResponse({"success": False, "error": "Message text cannot be empty."}, status_code=400)
 
     all_users = db.get_all_users()
-    from bot import whatsapp
-
     recipients = []
     for phone, u in all_users.items():
         phase = u.get("phase", "idle")
@@ -348,36 +405,16 @@ async def send_broadcast_endpoint(request: Request):
             "error": f"No educators found in target cohort '{target_segment}'.",
         }, status_code=400)
 
-    results = []
-    sent_count = 0
-    failed_count = 0
+    sem = asyncio.Semaphore(5)
 
-    for phone, u in recipients:
-        phase_label = "Graduated" if (u.get("phase") == "complete" or len(u.get("completed_lessons") or []) >= 1) else (u.get("phase", "active").capitalize())
-        progress_str = "100%" if phase_label == "Graduated" else ("50%" if u.get("phase") == "quiz" else "0%")
+    async def _send_one(phone: str, u: dict) -> dict:
+        async with sem:
+            body = _format_personalized_message(raw_message, phone, u)
+            return await _deliver_admin_message(phone, body, "admin_broadcast", f"Cohort ({target_segment})")
 
-        body = (
-            raw_message
-            .replace("{phone}", phone)
-            .replace("{status}", phase_label)
-            .replace("{progress}", progress_str)
-        )
-
-        try:
-            resp = await whatsapp.send_text(phone, body)
-            if resp.status_code < 400:
-                sent_count += 1
-                results.append({"phone": phone, "status": "sent"})
-                db.log_activity(phone, "admin_broadcast_sent", f"Cohort ({target_segment}): {body[:60]}")
-            else:
-                failed_count += 1
-                err_detail = resp.text[:200]
-                results.append({"phone": phone, "status": "failed", "error": err_detail})
-                db.log_activity(phone, "admin_broadcast_failed", f"HTTP {resp.status_code}: {err_detail[:60]}")
-        except Exception as e:
-            failed_count += 1
-            results.append({"phone": phone, "status": "failed", "error": str(e)})
-            db.log_activity(phone, "admin_broadcast_error", str(e))
+    results = await asyncio.gather(*(_send_one(p, u) for p, u in recipients))
+    sent_count = sum(1 for r in results if r["status"] == "sent")
+    failed_count = len(results) - sent_count
 
     return JSONResponse({
         "success": True,
@@ -399,7 +436,8 @@ async def send_direct_message_endpoint(request: Request):
     except Exception:
         return JSONResponse({"success": False, "error": "Invalid JSON body"}, status_code=400)
 
-    phone = (data.get("phone") or "").strip().replace("+", "").replace(" ", "").replace("-", "")
+    raw_phone = (data.get("phone") or "").strip()
+    phone = "".join(ch for ch in raw_phone if ch.isdigit())
     raw_message = (data.get("message") or "").strip()
 
     if not phone:
@@ -407,39 +445,25 @@ async def send_direct_message_endpoint(request: Request):
     if not raw_message:
         return JSONResponse({"success": False, "error": "Message text cannot be empty."}, status_code=400)
 
-    user = db.get_user_state(phone) or {}
-    phase_label = "Graduated" if (user.get("phase") == "complete" or len(user.get("completed_lessons") or []) >= 1) else (user.get("phase", "active").capitalize())
-    progress_str = "100%" if phase_label == "Graduated" else ("50%" if user.get("phase") == "quiz" else "0%")
+    user = db.get_user_state(raw_phone) or db.get_user_state(phone) or db.get_user_state(f"+{phone}") or {}
+    body = _format_personalized_message(raw_message, raw_phone or phone, user)
 
-    body = (
-        raw_message
-        .replace("{phone}", phone)
-        .replace("{status}", phase_label)
-        .replace("{progress}", progress_str)
-    )
-
-    from bot import whatsapp
-    try:
-        resp = await whatsapp.send_text(phone, body)
-        if resp.status_code < 400:
-            db.log_activity(phone, "admin_direct_message_sent", f"Direct msg: {body[:60]}")
-            return JSONResponse({
-                "success": True,
-                "phone": phone,
-                "message": f"Message delivered successfully to {phone}",
-            })
-        else:
-            err_detail = resp.text[:300]
-            db.log_activity(phone, "admin_direct_message_failed", f"HTTP {resp.status_code}: {err_detail[:60]}")
-            return JSONResponse({
-                "success": False,
-                "phone": phone,
-                "error": f"WhatsApp API error (HTTP {resp.status_code})",
-                "detail": err_detail,
-            }, status_code=400)
-    except Exception as e:
-        db.log_activity(phone, "admin_direct_message_error", str(e))
-        return JSONResponse({"success": False, "phone": phone, "error": str(e)}, status_code=500)
+    outcome = await _deliver_admin_message(phone, body, "admin_direct_message", "Direct msg")
+    if outcome["status"] == "sent":
+        return JSONResponse({
+            "success": True,
+            "phone": phone,
+            "used_template": outcome.get("used_template"),
+            "message": f"Message delivered successfully to {phone}",
+        })
+    status_code = 400 if outcome.get("code") else 500
+    return JSONResponse({
+        "success": False,
+        "phone": phone,
+        "code": outcome.get("code"),
+        "error": outcome.get("error") or "Failed to send message",
+        "detail": outcome.get("detail"),
+    }, status_code=status_code)
 
 
 @router.get("/api/test-gemini")
@@ -1780,10 +1804,6 @@ async def admin_dashboard(request: Request):
                                     </div>
                                 </div>
                             </div>
-                            <div class="advisory-box">
-                                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="flex-shrink:0;margin-top:1px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                                <span><b>Meta 24-Hour Policy Notice:</b> WhatsApp Cloud API permits custom free-form messages to users active within the last 24 hours. Messages sent to recipients outside this window may require WhatsApp pre-approved utility/marketing templates.</span>
-                            </div>
                         </div>
                     </div>
                 </div>
@@ -1857,10 +1877,6 @@ async def admin_dashboard(request: Request):
                                     </div>
                                 </div>
                             </div>
-                            <div class="advisory-box">
-                                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="flex-shrink:0;margin-top:1px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                                <span><b>Direct Channel:</b> This sends a one-to-one message straight from your official WhatsApp number to the selected educator. Activity is automatically logged in the learner's journey.</span>
-                            </div>
                         </div>
                     </div>
                 </div>
@@ -1880,7 +1896,7 @@ async def admin_dashboard(request: Request):
                     </div>
                     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
                         <input type="text" id="userSearch" class="search-input" placeholder="Search phone number..." oninput="filterTable()">
-                        <div class="filter-pills">
+                        <div class="filter-pills" id="tableFilterPills">
                             <button class="filter-pill active" onclick="setFilter('all', this)">All</button>
                             <button class="filter-pill" onclick="setFilter('active', this)">Active</button>
                             <button class="filter-pill" onclick="setFilter('completed', this)">Graduated</button>
@@ -2005,13 +2021,21 @@ async def admin_dashboard(request: Request):
             `;
         }}
 
+        function adminApiUrl(path) {{
+            const urlParams = new URLSearchParams(window.location.search);
+            const adminPass = urlParams.get('password') || urlParams.get('pass');
+            if (!adminPass) return path;
+            const sep = path.includes('?') ? '&' : '?';
+            return `${{path}}${{sep}}password=${{encodeURIComponent(adminPass)}}`;
+        }}
+
         async function refreshDashboardData(silent = false) {{
             const btn = document.getElementById('refreshBtn');
             const icon = document.getElementById('refreshIcon');
             if (!silent && icon) icon.classList.add('spinning');
 
             try {{
-                const resp = await fetch('/admin/api/analytics');
+                const resp = await fetch(adminApiUrl('/admin/api/analytics'));
                 if (!resp.ok) throw new Error('Network error');
                 const data = await resp.json();
                 dashboardData = data;
@@ -2030,8 +2054,9 @@ async def admin_dashboard(request: Request):
                 // Update Survey Insights
                 renderSurveyCards(data.assessment_insights || data.survey_insights);
 
-                // Re-render Table
+                // Re-render Table & Messaging Audience Selectors
                 renderTableRows(data.users);
+                updateMessagingAudienceUI(data.users);
 
                 // Re-render Activity Stream
                 renderActivityFeed(data.recent_activity);
@@ -2048,7 +2073,7 @@ async def admin_dashboard(request: Request):
             if (input) {{
                 input.select();
                 navigator.clipboard.writeText(input.value);
-                alert('Webhook URL copied to clipboard!\n\nPaste this into Meta Developer Portal > WhatsApp > Configuration > Callback URL');
+                alert('Webhook URL copied to clipboard!\\n\\nPaste this into Meta Developer Portal > WhatsApp > Configuration > Callback URL');
             }}
         }}
 
@@ -2071,7 +2096,7 @@ async def admin_dashboard(request: Request):
             resDiv.innerHTML = 'Connecting to Meta WhatsApp Cloud API...';
 
             try {{
-                const resp = await fetch('/admin/api/test-whatsapp', {{
+                const resp = await fetch(adminApiUrl('/admin/api/test-whatsapp'), {{
                     method: 'POST',
                     headers: {{'Content-Type': 'application/json'}},
                     body: JSON.stringify({{phone: phone}})
@@ -2115,10 +2140,11 @@ async def admin_dashboard(request: Request):
             let html = '';
             users.forEach(u => {{
                 const phone = u.phone_number;
+                const safePhone = escapeHtml(phone);
                 const phase = u.phase;
                 const pct = u.progress_percent;
-                const mod_title = u.current_module_title;
-                const last_seen = u.last_seen_relative;
+                const mod_title = escapeHtml(u.current_module_title || '');
+                const last_seen = escapeHtml(u.last_seen_relative || '');
                 const messages = u.total_messages;
                 const assess_done = (u.assessment_answers && Object.keys(u.assessment_answers).length >= 4) ? 'Completed' : 'Pending';
 
@@ -2148,10 +2174,10 @@ async def admin_dashboard(request: Request):
                 const clean_phone = phone.replace('+', '').replace(/\\s/g, '').replace(/-/g, '');
 
                 html += `
-                <tr data-phone="${{phone}}" data-category="${{row_category}}">
+                <tr data-phone="${{safePhone}}" data-category="${{row_category}}">
                     <td class="cell-phone">
                         <div style="display:flex;align-items:center;gap:8px;">
-                            <span style="font-weight:700;color:#0f172a;">${{phone}}</span>
+                            <span style="font-weight:700;color:#0f172a;">${{safePhone}}</span>
                             <a href="https://wa.me/${{clean_phone}}" target="_blank" rel="noopener noreferrer" class="wa-btn" title="Open chat with teacher on WhatsApp">
                                 WhatsApp
                             </a>
@@ -2171,14 +2197,47 @@ async def admin_dashboard(request: Request):
                     <td style="text-align:center;font-weight:700;color:#334155;">${{messages}}</td>
                     <td><span class="badge ${{assess_badge}}">${{assess_done}}</span></td>
                     <td class="cell-actions">
-                        <button class="btn-action btn-view" onclick="openUserModal('${{phone}}')">Journey</button>
-                        <button class="btn-action btn-reset" onclick="resetUser('${{phone}}')">Reset</button>
-                        <button class="btn-action btn-reset" style="color:#ef4444;border-color:#fecaca;" onclick="deleteUser('${{phone}}')">Delete</button>
+                        <button class="btn-action btn-view" onclick="openUserModal('${{safePhone}}')">Journey</button>
+                        <button class="btn-action" style="background:#22c55e;color:#ffffff;border:1px solid #16a34a;font-weight:600;" onclick="openDirectMessage('${{safePhone}}')" title="Send direct custom message to this educator">Message</button>
+                        <button class="btn-action btn-reset" onclick="resetUser('${{safePhone}}')">Reset</button>
+                        <button class="btn-action btn-reset" style="color:#ef4444;border-color:#fecaca;" onclick="deleteUser('${{safePhone}}')">Delete</button>
                     </td>
                 </tr>`;
             }});
             tbody.innerHTML = html;
             filterTable();
+        }}
+
+        function updateMessagingAudienceUI(users) {{
+            if (!users) return;
+            const segSelect = document.getElementById('broadcastSegment');
+            if (segSelect) {{
+                const curSeg = segSelect.value;
+                const total = users.length;
+                const completed = users.filter(u => u.phase === 'complete' || (u.completed_count || 0) >= 1).length;
+                const active = users.filter(u => (u.phase === 'lesson' || u.phase === 'quiz' || u.phase === 'tutor') && u.phase !== 'complete' && (u.completed_count || 0) < 1).length;
+                const idle = users.filter(u => u.phase === 'idle').length;
+                segSelect.innerHTML = `
+                    <option value="all">All Registered Teachers (${{total}})</option>
+                    <option value="active">Active Learners in Module 1 (${{active}})</option>
+                    <option value="completed">Graduated / Finished (${{completed}})</option>
+                    <option value="idle">Idle / Not Started (${{idle}})</option>
+                `;
+                segSelect.value = curSeg || 'all';
+            }}
+
+            const recSelect = document.getElementById('directRecipientSelect');
+            if (recSelect) {{
+                const curPhone = recSelect.value;
+                let opts = '<option value="">-- Choose Educator from DB --</option>';
+                users.forEach(u => {{
+                    const p = escapeHtml(u.phone_number);
+                    const ph = escapeHtml((u.phase || 'idle').charAt(0).toUpperCase() + (u.phase || 'idle').slice(1));
+                    opts += `<option value="${{p}}">${{p}} — ${{ph}} (${{u.progress_percent || 0}}% complete)</option>`;
+                }});
+                recSelect.innerHTML = opts;
+                if (curPhone) recSelect.value = curPhone;
+            }}
         }}
 
         function renderActivityFeed(activities) {{
@@ -2208,7 +2267,7 @@ async def admin_dashboard(request: Request):
 
         function setFilter(cat, btn) {{
             currentFilter = cat;
-            document.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('#tableFilterPills .filter-pill').forEach(p => p.classList.remove('active'));
             btn.classList.add('active');
             filterTable();
         }}
@@ -2234,7 +2293,7 @@ async def admin_dashboard(request: Request):
             modalBody.innerHTML = '<p style="color:#64748b;">Loading full timeline from database...</p>';
 
             try {{
-                const resp = await fetch('/admin/api/user/' + encodeURIComponent(phone));
+                const resp = await fetch(adminApiUrl('/admin/api/user/' + encodeURIComponent(phone)));
                 if (!resp.ok) throw new Error('User record not found');
                 const data = await resp.json();
                 const u = data.user;
@@ -2280,7 +2339,7 @@ async def admin_dashboard(request: Request):
         async function resetUser(phone) {{
             if (!confirm(`Are you sure you want to reset all course progress for ${{phone}}?`)) return;
             try {{
-                const resp = await fetch('/admin/api/user/' + encodeURIComponent(phone) + '/reset', {{ method: 'POST' }});
+                const resp = await fetch(adminApiUrl('/admin/api/user/' + encodeURIComponent(phone) + '/reset'), {{ method: 'POST' }});
                 if (resp.ok) {{
                     refreshDashboardData();
                 }} else {{
@@ -2294,7 +2353,7 @@ async def admin_dashboard(request: Request):
         async function deleteUser(phone) {{
             if (!confirm(`Are you sure you want to permanently delete learner ${{phone}} from the database?`)) return;
             try {{
-                const resp = await fetch('/admin/api/user/' + encodeURIComponent(phone) + '/delete', {{ method: 'POST' }});
+                const resp = await fetch(adminApiUrl('/admin/api/user/' + encodeURIComponent(phone) + '/delete'), {{ method: 'POST' }});
                 if (resp.ok) {{
                     refreshDashboardData();
                 }} else {{
@@ -2355,8 +2414,8 @@ async def admin_dashboard(request: Request):
         function insertTag(tag, textareaId, callback) {{
             const el = document.getElementById(textareaId);
             if (!el) return;
-            const start = el.selectionStart || el.value.length;
-            const end = el.selectionEnd || el.value.length;
+            const start = (el.selectionStart !== undefined && el.selectionStart !== null) ? el.selectionStart : el.value.length;
+            const end = (el.selectionEnd !== undefined && el.selectionEnd !== null) ? el.selectionEnd : el.value.length;
             el.value = el.value.substring(0, start) + tag + el.value.substring(end);
             el.selectionStart = el.selectionEnd = start + tag.length;
             el.focus();
@@ -2431,7 +2490,9 @@ async def admin_dashboard(request: Request):
                 card.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
             }}
             const txt = document.getElementById('directMessageText');
-            if (txt) txt.focus();
+            if (txt) {{
+                try {{ txt.focus({{ preventScroll: true }}); }} catch (_) {{ txt.focus(); }}
+            }}
         }}
 
         function escapeHtml(text) {{
@@ -2459,12 +2520,7 @@ async def admin_dashboard(request: Request):
             resultDiv.style.display = 'none';
             
             try {{
-                const urlParams = new URLSearchParams(window.location.search);
-                const adminPass = urlParams.get('password') || urlParams.get('pass');
-                let endpoint = '/admin/api/broadcast';
-                if (adminPass) endpoint += '?password=' + encodeURIComponent(adminPass);
-                
-                const resp = await fetch(endpoint, {{
+                const resp = await fetch(adminApiUrl('/admin/api/broadcast'), {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ segment, message }})
@@ -2473,24 +2529,36 @@ async def admin_dashboard(request: Request):
                 
                 resultDiv.style.display = 'block';
                 if (res.success) {{
-                    resultDiv.style.background = '#dcfce7';
-                    resultDiv.style.border = '1px solid #86efac';
-                    resultDiv.style.color = '#15803d';
-                    resultDiv.innerHTML = `<b>Broadcast Finished!</b> Delivered to <b>${{res.sent_count}} / ${{res.total_targets}}</b> teachers successfully.` + 
-                        (res.failed_count > 0 ? ` <span style="color:#b91c1c;">(${{res.failed_count}} failed or outside 24h window)</span>` : '');
+                    const failures = (res.results || []).filter(r => r.status !== 'sent');
+                    if (res.sent_count > 0) {{
+                        resultDiv.style.background = '#dcfce7';
+                        resultDiv.style.border = '1px solid #86efac';
+                        resultDiv.style.color = '#15803d';
+                    }} else {{
+                        resultDiv.style.background = '#fee2e2';
+                        resultDiv.style.border = '1px solid #fca5a5';
+                        resultDiv.style.color = '#b91c1c';
+                    }}
+                    let failHtml = '';
+                    if (failures.length > 0) {{
+                        const items = failures.slice(0, 5).map(f => `<li>${{escapeHtml(f.phone)}}: ${{escapeHtml(f.error || 'Failed')}}</li>`).join('');
+                        failHtml = `<ul style="margin:6px 0 0 18px;font-size:12px;color:#b91c1c;">${{items}}</ul>`;
+                    }}
+                    resultDiv.innerHTML = `<b>Broadcast Finished!</b> Delivered to <b>${{res.sent_count}} / ${{res.total_targets}}</b> teachers successfully.` +
+                        (res.failed_count > 0 ? ` <span style="color:#b91c1c;">(${{res.failed_count}} failed)</span>${{failHtml}}` : '');
                     refreshDashboardData(true);
                 }} else {{
                     resultDiv.style.background = '#fee2e2';
                     resultDiv.style.border = '1px solid #fca5a5';
                     resultDiv.style.color = '#b91c1c';
-                    resultDiv.innerHTML = `<b>Broadcast Error:</b> ${{res.error || 'Failed to send broadcast'}}`;
+                    resultDiv.innerHTML = `<b>Broadcast Error:</b> ${{escapeHtml(res.error || 'Failed to send broadcast')}}`;
                 }}
             }} catch (e) {{
                 resultDiv.style.display = 'block';
                 resultDiv.style.background = '#fee2e2';
                 resultDiv.style.border = '1px solid #fca5a5';
                 resultDiv.style.color = '#b91c1c';
-                resultDiv.innerHTML = `<b>Error:</b> ${{e.message}}`;
+                resultDiv.innerHTML = `<b>Error:</b> ${{escapeHtml(e.message)}}`;
             }} finally {{
                 btn.disabled = false;
                 btn.innerHTML = 'Send Broadcast';
@@ -2517,12 +2585,7 @@ async def admin_dashboard(request: Request):
             resultDiv.style.display = 'none';
             
             try {{
-                const urlParams = new URLSearchParams(window.location.search);
-                const adminPass = urlParams.get('password') || urlParams.get('pass');
-                let endpoint = '/admin/api/direct-message';
-                if (adminPass) endpoint += '?password=' + encodeURIComponent(adminPass);
-                
-                const resp = await fetch(endpoint, {{
+                const resp = await fetch(adminApiUrl('/admin/api/direct-message'), {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ phone, message }})
@@ -2534,7 +2597,7 @@ async def admin_dashboard(request: Request):
                     resultDiv.style.background = '#dcfce7';
                     resultDiv.style.border = '1px solid #86efac';
                     resultDiv.style.color = '#15803d';
-                    resultDiv.innerHTML = `<b>Success!</b> Message sent to <b>${{phone}}</b> via WhatsApp.`;
+                    resultDiv.innerHTML = `<b>Success!</b> Message sent to <b>${{escapeHtml(phone)}}</b> via WhatsApp.`;
                     document.getElementById('directMessageText').value = '';
                     updateDirectPreview();
                     refreshDashboardData(true);
@@ -2542,14 +2605,14 @@ async def admin_dashboard(request: Request):
                     resultDiv.style.background = '#fee2e2';
                     resultDiv.style.border = '1px solid #fca5a5';
                     resultDiv.style.color = '#b91c1c';
-                    resultDiv.innerHTML = `<b>Delivery Failed:</b> ${{res.error || 'Failed to send message'}}. ${{res.detail ? `<div style="font-size:11px;margin-top:4px;font-family:monospace;">${{res.detail}}</div>` : ''}}`;
+                    resultDiv.innerHTML = `<b>Delivery Failed:</b> ${{escapeHtml(res.error || 'Failed to send message')}}`;
                 }}
             }} catch (e) {{
                 resultDiv.style.display = 'block';
                 resultDiv.style.background = '#fee2e2';
                 resultDiv.style.border = '1px solid #fca5a5';
                 resultDiv.style.color = '#b91c1c';
-                resultDiv.innerHTML = `<b>Error:</b> ${{e.message}}`;
+                resultDiv.innerHTML = `<b>Error:</b> ${{escapeHtml(e.message)}}`;
             }} finally {{
                 btn.disabled = false;
                 btn.innerHTML = 'Send Direct Message';

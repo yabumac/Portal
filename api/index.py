@@ -151,6 +151,55 @@ def get_clean_request_path(request: Request, path: str = "") -> str:
 # ---------------------------------------------------------------------------
 # Health checks
 # ---------------------------------------------------------------------------
+async def _dispatch_admin_get(request: Request, clean_path: str, raw_path: str):
+    """Shared GET dispatcher for admin API, CSV export, login/logout, and dashboard under Vercel rewrites."""
+    from urllib.parse import unquote
+
+    params = request.query_params
+    if clean_path in ("admin/export/csv", "export/csv") or clean_path.endswith("export/csv") or "export/csv" in raw_path:
+        from api.admin import export_users_csv
+        return await export_users_csv(request)
+
+    if clean_path.startswith("admin/login") or clean_path == "login" or "admin/login" in raw_path:
+        from api.admin import login_page
+        return await login_page(error=params.get("error"))
+
+    if clean_path in ("admin/logout", "logout"):
+        from api.admin import logout
+        return await logout()
+
+    if any(k in raw_path or k in clean_path for k in ("admin/api/analytics", "api/admin/analytics", "api/analytics")):
+        from api.admin import get_analytics_json
+        return await get_analytics_json(request)
+
+    if any(k in raw_path or k in clean_path for k in ("admin/api/test-gemini", "api/admin/test-gemini", "api/test-gemini")):
+        from api.admin import test_gemini_endpoint
+        return await test_gemini_endpoint(request)
+
+    if any(k in raw_path or k in clean_path for k in ("admin/api/whatsapp-status", "api/admin/whatsapp-status")):
+        from api.admin import get_whatsapp_status
+        return await get_whatsapp_status(request)
+
+    for prefix in ("admin/api/user/", "api/admin/user/"):
+        if clean_path.startswith(prefix):
+            phone_part = unquote(clean_path[len(prefix):].strip("/"))
+            from api.admin import get_single_user_json
+            return await get_single_user_json(phone_part, request)
+
+    if (
+        clean_path in ("admin", "dashboard", "admin/dashboard", "api/admin", "api/dashboard")
+        or clean_path.startswith("admin/")
+        or "admin" in raw_path
+        or "dashboard" in raw_path
+        or params.get("password")
+        or params.get("pass")
+    ):
+        from api.admin import admin_dashboard
+        return await admin_dashboard(request)
+
+    return None
+
+
 @app.get("/")
 @app.get("/health")
 @app.get("/api")
@@ -174,25 +223,9 @@ async def health_check(request: Request):
         or clean_path
     ).lower()
 
-    if clean_path in ("admin/export/csv", "export/csv") or clean_path.endswith("export/csv") or "export/csv" in raw_path:
-        from api.admin import export_users_csv
-        return await export_users_csv(request)
-
-    if clean_path.startswith("admin/login") or clean_path == "login":
-        from api.admin import login_page
-        return await login_page()
-
-    if clean_path in ("admin/api/analytics", "api/admin/analytics", "api/analytics"):
-        from api.admin import get_analytics_json
-        return await get_analytics_json(request)
-
-    if clean_path in ("admin/api/test-gemini", "api/admin/test-gemini", "api/test-gemini"):
-        from api.admin import test_gemini_endpoint
-        return await test_gemini_endpoint(request)
-
-    if clean_path in ("admin", "dashboard", "admin/dashboard", "api/admin", "api/dashboard") or clean_path.startswith("admin/") or "admin" in raw_path or "dashboard" in raw_path or params.get("password") or params.get("pass"):
-        from api.admin import admin_dashboard
-        return await admin_dashboard(request)
+    admin_resp = await _dispatch_admin_get(request, clean_path, raw_path)
+    if admin_resp is not None:
+        return admin_resp
 
     return {
         "status": "ok",
@@ -251,6 +284,7 @@ async def handle_post(request: Request, path: str = ""):
 
     # Route admin API POST endpoints
     if clean_path.startswith("admin/api/") or clean_path.startswith("api/admin/"):
+        from urllib.parse import unquote
         subpath = clean_path
         for prefix in ("admin/api/", "api/admin/"):
             if subpath.startswith(prefix):
@@ -267,11 +301,11 @@ async def handle_post(request: Request, path: str = ""):
             from api.admin import test_whatsapp_endpoint
             return await test_whatsapp_endpoint(request)
         if subpath.startswith("user/") and subpath.endswith("/reset"):
-            phone = subpath.split("/")[1]
+            phone = unquote(subpath.split("/")[1])
             from api.admin import reset_single_user
             return await reset_single_user(phone, request)
         if subpath.startswith("user/") and subpath.endswith("/delete"):
-            phone = subpath.split("/")[1]
+            phone = unquote(subpath.split("/")[1])
             from api.admin import delete_single_user
             return await delete_single_user(phone, request)
 
@@ -322,32 +356,9 @@ async def catch_all_get(request: Request, path: str = ""):
         or clean_path
     ).lower()
 
-    if clean_path in ("admin/export/csv", "export/csv") or clean_path.endswith("export/csv") or "export/csv" in raw_path:
-        from api.admin import export_users_csv
-        return await export_users_csv(request)
-
-    if clean_path.startswith("admin/login") or clean_path == "login" or "admin/login" in raw_path:
-        from api.admin import login_page
-        return await login_page()
-
-    if any(k in raw_path or k in clean_path for k in ("admin/api/analytics", "api/admin/analytics", "api/analytics")):
-        from api.admin import get_analytics_json
-        return await get_analytics_json(request)
-
-    if any(k in raw_path or k in clean_path for k in ("admin/api/test-gemini", "api/admin/test-gemini", "api/test-gemini")):
-        from api.admin import test_gemini_endpoint
-        return await test_gemini_endpoint(request)
-
-    if (
-        clean_path in ("admin", "dashboard", "admin/dashboard", "api/admin", "api/dashboard")
-        or clean_path.startswith("admin/")
-        or "admin" in raw_path
-        or "dashboard" in raw_path
-        or params.get("password")
-        or params.get("pass")
-    ):
-        from api.admin import admin_dashboard
-        return await admin_dashboard(request)
+    admin_resp = await _dispatch_admin_get(request, clean_path, raw_path)
+    if admin_resp is not None:
+        return admin_resp
 
     if clean_path in ("media/logo.png", "logo.png", "static/logo.png"):
         from api.admin import admin_logo

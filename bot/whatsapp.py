@@ -134,6 +134,58 @@ async def send_text(to: str, body: str) -> httpx.Response:
     return await _post(payload)
 
 
+async def send_template(
+    to: str,
+    template_name: str,
+    language_code: str = "en_US",
+    body_params: Optional[list[str]] = None,
+) -> httpx.Response:
+    """Send a pre-approved Meta WhatsApp template message (works outside the 24h window)."""
+    template_obj: dict = {
+        "name": template_name,
+        "language": {"code": language_code},
+    }
+    if body_params:
+        template_obj["components"] = [
+            {
+                "type": "body",
+                "parameters": [{"type": "text", "text": str(p)} for p in body_params],
+            }
+        ]
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "template",
+        "template": template_obj,
+    }
+    return await _post(payload)
+
+
+def parse_meta_error(response_text: str) -> dict:
+    """Extract structured Meta Graph API error code and human-readable hint."""
+    try:
+        data = json.loads(response_text) if response_text else {}
+    except Exception:
+        data = {}
+    err = data.get("error", {}) if isinstance(data, dict) else {}
+    code = err.get("code")
+    msg = err.get("message") or response_text[:200]
+    hint = None
+    if code == 131047:
+        hint = (
+            "Meta rejected free-form text because this recipient last replied over 24 hours ago. "
+            "Configure an approved Meta template in WHATSAPP_REENGAGEMENT_TEMPLATE or ask the learner to reply."
+        )
+    elif code == 190:
+        hint = "WhatsApp Access Token expired or invalid. Update WHATSAPP_TOKEN."
+    elif code == 131030:
+        hint = "Recipient phone is not in the Meta API sandbox allowlist."
+    elif code == 132001:
+        hint = "Configured WhatsApp template name does not exist or is not approved."
+    return {"code": code, "message": msg, "hint": hint}
+
+
 async def send_buttons(
     to: str,
     body: str,
