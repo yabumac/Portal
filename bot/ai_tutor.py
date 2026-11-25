@@ -31,13 +31,12 @@ from content import curriculum
 
 logger = logging.getLogger("whatsapp_bot")
 
-DEFAULT_MODEL = "gemini-3.8-flash"
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
 FALLBACK_MODELS = [
-    "gemini-3.8-flash",
     "gemini-3.5-flash-lite",
-    "gemini-3.7-flash",
     "gemini-3.5-flash",
-    "gemini-3.1-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
     "gemini-3-flash-preview",
     "gemini-flash-latest",
 ]
@@ -448,9 +447,11 @@ async def _call_gemini_fast(
         for model_name in candidate_models[:5]:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
 
-            # Build payloads: first with thinkingBudget=0 & relaxed safety (fast, free chatbot);
-            # second without thinkingConfig/safetySettings in case a specific model rejects them with HTTP 400.
-            gen_cfg_fast: dict = {"temperature": 0.7, "maxOutputTokens": 700, "thinkingConfig": {"thinkingBudget": 0}}
+            # Build payloads: skip thinkingConfig on -lite models to avoid HTTP 400 retries;
+            # keep payload_compat as automatic fallback on HTTP 400.
+            gen_cfg_fast: dict = {"temperature": 0.7, "maxOutputTokens": 700}
+            if "lite" not in model_name:
+                gen_cfg_fast["thinkingConfig"] = {"thinkingBudget": 0}
 
             payload_fast = {
                 "systemInstruction": {"parts": [{"text": system_inst}]},
