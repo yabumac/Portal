@@ -471,7 +471,8 @@ async def test_gemini_endpoint(request: Request):
     if not is_authenticated(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     from bot import ai_tutor
-    diagnostics = await ai_tutor.diagnose_gemini()
+    test_q = request.query_params.get("q")
+    diagnostics = await ai_tutor.diagnose_gemini(test_prompt=test_q)
     return JSONResponse(diagnostics)
 
 

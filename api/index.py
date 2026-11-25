@@ -427,11 +427,6 @@ async def handle_text(wa_id: str, raw: str) -> None:
     cur = state.get_state(wa_id)
     phase = cur.get("phase")
 
-    # greetings -> intro or resume menu
-    if low in GREETINGS:
-        await send_menu(wa_id, fresh=True)
-        return
-
     # 'menu' -> main menu (soft exit modes)
     if low == "menu":
         if phase == "tutor":
@@ -441,12 +436,20 @@ async def handle_text(wa_id: str, raw: str) -> None:
         await send_menu(wa_id, fresh=False)
         return
 
-    # tutor mode: any remaining text = AI question
+    # tutor mode: act as a free conversational AI chatbot (even on 'hi'/'hello'/'help');
+    # explicit exit keywords ('menu', 'exit', 'quit', 'back') or buttons exit tutor mode.
     if phase == "tutor":
         if low in MODE_ABORT:
             await exit_tutor_flow(wa_id)
             return
         await tutor_chat(wa_id, text)
+        return
+
+    # greetings -> intro or resume menu (outside tutor mode; exits assessment if active)
+    if low in GREETINGS:
+        if phase == "assessment":
+            state.abort_assessment(wa_id)
+        await send_menu(wa_id, fresh=True)
         return
 
     # assessment mode: letters = answer, else prompt retry
@@ -475,13 +478,17 @@ async def handle_text(wa_id: str, raw: str) -> None:
         await handle_button_click(wa_id, ENROLL)
         return
 
-    # Direct module jumping (e.g. "module 1", "module 2")
-    for mod_num in range(1, 8):
+    # Direct module jumping constrained to actual available modules
+    unit_id_jump = cur.get("unit_id") or curriculum.DEFAULT_UNIT_ID
+    total_avail = curriculum.total_lessons(unit_id_jump)
+    for mod_num in range(1, total_avail + 1):
         if low in (f"module {mod_num}", f"mod {mod_num}", f"lesson {mod_num}"):
-            unit_id = cur.get("unit_id") or curriculum.DEFAULT_UNIT_ID
-            state.start_unit(wa_id, unit_id, restart=False)
+            state.start_unit(wa_id, unit_id_jump, restart=False)
             updated = state.get_state(wa_id)
-            updated["lesson_index"] = mod_num - 1
+            if (updated.get("lesson_index") or 0) != (mod_num - 1):
+                updated["lesson_index"] = mod_num - 1
+                updated["step_index"] = 0
+                updated["awaiting_response"] = None
             updated["phase"] = "lesson"
             state.set_state(wa_id, updated)
             lesson = state.current_lesson(updated)
@@ -493,7 +500,7 @@ async def handle_text(wa_id: str, raw: str) -> None:
     if phase == "lesson":
         awaiting = cur.get("awaiting_response")
         if awaiting == "what_is_ai":
-            if low in ("continue", "next", "skip", "pass", "idk", "go"):
+            if low in ("continue", "next", "skip", "pass", "idk", "go", "ready", "quiz", "resume"):
                 await whatsapp.send_text(
                     wa_id,
                     "Please type your answer or thoughts about what AI means to you to continue:"
@@ -521,7 +528,7 @@ async def handle_text(wa_id: str, raw: str) -> None:
             return
 
         if awaiting == "everyday_ai_use":
-            if low in ("continue", "next", "skip", "pass", "idk", "go"):
+            if low in ("continue", "next", "skip", "pass", "idk", "go", "ready", "quiz", "resume"):
                 await whatsapp.send_text(
                     wa_id,
                     "Please type your thoughts on how you use AI (e.g. search, translation, writing, maps) to continue:"
@@ -595,6 +602,11 @@ async def handle_button_click(wa_id: str, button_id: str) -> None:
             await send_menu(wa_id, fresh=False)
             return
 
+        # If user tapped an older lesson/menu button while inside Tutor mode, exit tutor mode cleanly first
+        if cur.get("phase") == "tutor":
+            state.exit_tutor(wa_id)
+            cur = state.get_state(wa_id)
+
         phase = cur.get("phase")
         if phase == "lesson" and button_id in (STEP_CONTINUE, NEXT_STEP, "continue", "next"):
             await advance_module_step(wa_id)
@@ -603,18 +615,20 @@ async def handle_button_click(wa_id: str, button_id: str) -> None:
         lesson_idx = cur.get("lesson_index", 0)
         completed = cur.get("completed_lessons") or []
 
-        # Check if user already has course progress - resume without losing state!
+        # Check if user already has course progress - resume at their exact step/quiz without losing state!
         has_progress = (
-            cur.get("phase") in ("lesson", "quiz", "tutor", "assessment")
+            cur.get("phase") in ("lesson", "quiz", "assessment")
             or (lesson_idx is not None and lesson_idx > 0)
+            or (cur.get("step_index") or 0) > 0
+            or bool(cur.get("quiz_answers"))
             or len(completed) > 0
         )
 
         if has_progress:
-            # Resume existing course
             state.start_unit(wa_id, curriculum.DEFAULT_UNIT_ID, restart=False)
-            lesson = state.current_lesson(state.get_state(wa_id))
-            if cur.get("phase") == "quiz":
+            updated = state.get_state(wa_id)
+            lesson = state.current_lesson(updated)
+            if updated.get("phase") == "quiz":
                 await send_quiz(wa_id)
             elif lesson:
                 await deliver_lesson(wa_id, lesson)
@@ -645,6 +659,10 @@ async def handle_button_click(wa_id: str, button_id: str) -> None:
         return
 
     if button_id == READY_QUIZ:
+        cur = state.get_state(wa_id)
+        if state.is_course_complete(cur):
+            await recover_or_start(wa_id)
+            return
         await send_quiz(wa_id)
         return
 
@@ -672,6 +690,10 @@ async def handle_button_click(wa_id: str, button_id: str) -> None:
         return
 
     if button_id.startswith(ANSWER_PREFIX):
+        cur = state.get_state(wa_id)
+        if state.is_course_complete(cur):
+            await recover_or_start(wa_id)
+            return
         await handle_quiz_answer(wa_id, button_id[len(ANSWER_PREFIX):])
         return
 
@@ -695,6 +717,8 @@ async def send_menu(wa_id: str, fresh: bool = True) -> None:
         and (
             phase in ("lesson", "quiz", "tutor", "assessment")
             or (lesson_idx is not None and lesson_idx > 0)
+            or (cur.get("step_index") or 0) > 0
+            or bool(cur.get("quiz_answers"))
             or len(completed) > 0
         )
     )
@@ -791,6 +815,11 @@ async def deliver_step(wa_id: str, lesson: dict, step_idx: int) -> None:
 
     if step_idx == 0:
         # Step 0: Course Intro and Objectives
+        cur["phase"] = "lesson"
+        cur["step_index"] = 0
+        cur["awaiting_response"] = None
+        state.set_state(wa_id, cur)
+
         for t in step.get("texts", []):
             await whatsapp.send_text(wa_id, t)
             await asyncio.sleep(0.3)
@@ -1170,7 +1199,9 @@ async def tutor_chat(wa_id: str, question: str) -> None:
     section = curriculum.lesson_as_context(unit_id, active_lesson_id) if unit_id and active_lesson_id else ""
 
     db.log_activity(wa_id, "tutor_query", question[:80])
-    answer = await ai_tutor.answer_question(question, section=section, module_title=lesson_title)
+    history = cur.get("tutor_history") or []
+    answer = await ai_tutor.answer_question(question, section=section, module_title=lesson_title, history=history)
+    state.append_tutor_turn(wa_id, question, answer)
     await whatsapp.send_text(wa_id, answer)
 
     buttons = [{"id": EXIT_TUTOR, "title": "Exit Tutor"}]
@@ -1183,29 +1214,111 @@ async def tutor_chat(wa_id: str, question: str) -> None:
     )
 
 
+async def _send_lesson_resume_prompt(wa_id: str, cur: dict, lesson: dict) -> None:
+    """
+    Send the exact interactive continuation prompt for the learner's current step/awaiting state.
+    Never jumps ahead to the quiz unless all sections are completed.
+    """
+    steps = lesson.get("steps") or []
+    if not steps:
+        await whatsapp.send_text(wa_id, f"Back to your lesson: {lesson['title']}")
+        await whatsapp.send_buttons(
+            wa_id,
+            "What would you like to do?",
+            [
+                {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
+                {"id": READY_QUIZ, "title": "Continue to Quiz"},
+            ],
+            footer="Ask a question or continue to the quiz",
+        )
+        return
+
+    step_idx = cur.get("step_index", 0)
+    awaiting = cur.get("awaiting_response")
+
+    if step_idx == 0:
+        await whatsapp.send_buttons(
+            wa_id,
+            "Back to Module 1 Introduction. Ready to begin Section 1?",
+            [
+                {"id": STEP_CONTINUE, "title": "Continue"},
+                {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
+            ],
+            footer="Tap Continue to proceed",
+        )
+    elif step_idx == 1:
+        if awaiting == "what_is_ai":
+            step = steps[1]
+            q_text = step.get("question", "Q: What is AI?")
+            note = step.get("prompt_note", "Take a moment to type your answer or thoughts about what AI means to you below:")
+            await whatsapp.send_text(wa_id, f"Back to Section 1:\n\n{q_text}\n\n{note}")
+            await whatsapp.send_buttons(
+                wa_id,
+                "Please type your answer in the chat box below:",
+                [{"id": ASK_TUTOR, "title": "Ask AI Tutor"}],
+                footer="Type your answer to continue",
+            )
+        else:
+            await whatsapp.send_buttons(
+                wa_id,
+                "Back to Section 1. Ready to continue to everyday AI examples?",
+                [
+                    {"id": STEP_CONTINUE, "title": "Continue"},
+                    {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
+                ],
+                footer="Tap Continue to proceed",
+            )
+    elif step_idx == 2:
+        if awaiting == "everyday_ai_use":
+            step = steps[2]
+            q_text = step.get("question", "Q: For what purposes do you use AI in your daily life?")
+            note = step.get("prompt_note", "Type your answer below (e.g. search, translation, writing, maps):")
+            await whatsapp.send_text(wa_id, f"Back to Section 1 (Everyday AI):\n\n{q_text}\n\n{note}")
+            await whatsapp.send_buttons(
+                wa_id,
+                "Please type your answer in the chat box below:",
+                [{"id": ASK_TUTOR, "title": "Ask AI Tutor"}],
+                footer="Type your answer to continue",
+            )
+        else:
+            await whatsapp.send_buttons(
+                wa_id,
+                "Back to Section 1. Ready for Section 2 (Overview of AI in Education)?",
+                [
+                    {"id": STEP_CONTINUE, "title": "Continue"},
+                    {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
+                ],
+                footer="Tap Continue to proceed",
+            )
+    else:
+        await whatsapp.send_buttons(
+            wa_id,
+            "Module 1 sections complete! Ready to start the quiz?",
+            [
+                {"id": READY_QUIZ, "title": "Start Quiz"},
+                {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
+            ],
+            footer="Test your knowledge or ask a question",
+        )
+
+
 async def exit_tutor_flow(wa_id: str) -> None:
-    """Exit tutor and return to the previous screen."""
+    """Exit tutor and return directly to where the learner left off."""
     cur = state.get_state(wa_id)
     unit_id = cur.get("unit_id") or curriculum.DEFAULT_UNIT_ID
     resume_lesson_id = cur.get("tutor_lesson")
     resume = state.exit_tutor(wa_id)
+    updated = state.get_state(wa_id)
 
     if resume == "lesson" and unit_id:
-        lesson = curriculum.get_lesson(unit_id, resume_lesson_id) if resume_lesson_id else None
+        lesson = (
+            curriculum.get_lesson(unit_id, resume_lesson_id)
+            if resume_lesson_id
+            else state.current_lesson(updated)
+        )
         if lesson:
-            await whatsapp.send_text(wa_id, f"Back to your lesson: {lesson['title']}")
-            await whatsapp.send_buttons(
-                wa_id, "What would you like to do?",
-                [
-                    {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
-                    {"id": READY_QUIZ, "title": "Continue"},
-                ],
-                footer="Ask a question or continue to the quiz",
-            )
+            await _send_lesson_resume_prompt(wa_id, updated, lesson)
             return
-        l2 = state.current_lesson(state.get_state(wa_id))
-        await deliver_lesson(wa_id, l2)
-        return
 
     if resume == "quiz" and unit_id:
         await send_quiz(wa_id)
@@ -1297,20 +1410,30 @@ async def handle_ai_fallback(wa_id: str, question: str) -> None:
     await whatsapp.send_text(wa_id, answer)
 
     if phase == "lesson" and lesson:
-        await whatsapp.send_buttons(
-            wa_id, "What would you like to do?",
-            [
-                {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
-                {"id": READY_QUIZ, "title": "Continue"},
-            ],
-            footer="Ask a question or continue to the quiz",
-        )
+        await _send_lesson_resume_prompt(wa_id, cur, lesson)
     elif phase == "quiz" and lesson:
         await send_quiz(wa_id)
-    elif phase == "complete":
-        await whatsapp.send_text(
+    elif phase == "complete" or state.is_course_complete(cur):
+        await whatsapp.send_buttons(
             wa_id,
-            "You already finished Unit 1! Type 'hi' to review lessons or ask anything.",
+            "You have completed Introduction to Artificial Intelligence (AI) for Teachers in Ethiopia!",
+            [
+                {"id": "main_menu", "title": "Main Menu"},
+                {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
+                {"id": RESTART, "title": "Review / Restart"},
+            ],
+            footer="Tap an option or keep chatting",
+        )
+    else:
+        await whatsapp.send_buttons(
+            wa_id,
+            "What would you like to do next?",
+            [
+                {"id": ENROLL, "title": "Enroll in Course"},
+                {"id": "main_menu", "title": "Main Menu"},
+                {"id": ASK_TUTOR, "title": "Ask AI Tutor"},
+            ],
+            footer="Tap an option or keep chatting",
         )
 
 
@@ -1323,9 +1446,9 @@ async def recover_or_start(wa_id: str) -> None:
     if state.is_course_complete(cur):
         await whatsapp.send_text(
             wa_id,
-            "You have already finished all 7 modules of the course! Congratulations.\n\n"
+            "You have already completed Introduction to Artificial Intelligence (AI) for Teachers in Ethiopia!\n\n"
             "There are no further modules to continue. You can ask the AI Tutor questions, "
-            "or review and restart the course below:",
+            "or review and restart the module below:",
         )
         await send_menu(wa_id, fresh=False)
         return

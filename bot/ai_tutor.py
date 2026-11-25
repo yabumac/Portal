@@ -57,32 +57,26 @@ def _get_gemini_api_key() -> Optional[str]:
 
 
 def _build_system_instruction(section: str = "", module_title: str = "") -> str:
-    current_module_label = module_title.strip() if module_title else "Introduction to AI for Teachers in Ethiopia"
-    clean_context = section.strip() if section else "General Course Curriculum"
+    current_module_label = module_title.strip() if module_title else "General"
+    clean_context = section.strip() if section else ""
 
-    # Simplified, friendly AI tutor prompt without restrictive guardrails
-    return f"""You are a helpful and friendly AI Tutor for Ethiopian primary and secondary school teachers taking the course: "Introduction to Artificial Intelligence (AI) for Teachers in Ethiopia".
+    context_block = ""
+    if clean_context:
+        context_block = (
+            f"\nIf the user asks about their course or lesson, here is their current context "
+            f"({current_module_label}):\n{clean_context}\n"
+        )
 
-Context:
-- Current Module: {current_module_label}
-- Lesson Context: {clean_context}
-
-Guidelines:
-- Answer the teacher's question directly, clearly, and conversationally.
-- Be warm, encouraging, practical, and helpful.
-- Keep your answers concise, easy to understand, and formatted cleanly for mobile reading on WhatsApp.
-"""
-
-    # --- Previous strict guardrails commented out as requested ---
-    # CRITICAL RESPONSE FORMAT RULES:
-    # 1. Output ONLY your direct conversational message to the teacher.
-    # 2. Structure your reply in exactly three parts:
-    #    - Part 1: Exactly ONE concise introductory paragraph (2-3 sentences) directly explaining the core concept.
-    #    - Part 2: Exactly 2 or 3 bullet points (* ) providing practical, low-resource classroom strategies for Ethiopian schools
-    #    - Part 3: Exactly ONE short, encouraging concluding sentence.
-    # OFF-TOPIC GUARDRAIL:
-    # If the user asks questions completely unrelated to education or teaching:
-    # Politely reply: "I am your AI Tutor dedicated to the 'AI for Teaching and Learning' course..."
+    return (
+        "You are a free, open, friendly conversational AI chatbot assistant inside WhatsApp.\n"
+        "Respond directly, naturally, and conversationally to whatever the user actually says — "
+        "whether it is casual chat, greetings, personal opinions or frustration (e.g. 'I hate AI'), "
+        "jokes, general knowledge, brainstorming, coding, science, everyday life, or teaching and the AI course.\n"
+        "Do NOT refuse benign or off-topic questions, do NOT force every reply into a course lecture, "
+        "and do NOT impose strict bullet-point templates unless the user asks for a list.\n"
+        "Keep answers concise and readable on a mobile WhatsApp screen."
+        f"{context_block}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -385,114 +379,170 @@ def clean_ai_output(t: str, fallback_fn=None) -> str:
     #     return fallback_fn() if fallback_fn else ""
 
 
-async def _call_gemini_fast(question: str, section: str, module_title: str) -> Optional[str]:
+_RELAXED_SAFETY = [
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+]
+
+
+def _extract_gemini_text(data: dict) -> Optional[str]:
+    candidates = data.get("candidates", [])
+    if not candidates:
+        return None
+    parts = candidates[0].get("content", {}).get("parts", [])
+    valid_parts = [
+        p.get("text", "").strip()
+        for p in parts
+        if p.get("text") and not p.get("thought", False)
+    ]
+    raw_text = (
+        "\n".join(valid_parts).strip()
+        if valid_parts
+        else (parts[-1].get("text", "").strip() if parts else "")
+    )
+    cleaned = clean_ai_output(raw_text, fallback_fn=None)
+    return cleaned or None
+
+
+def _build_contents(question: str, history: Optional[list[dict]] = None) -> list[dict]:
+    contents = []
+    for item in (history or [])[-16:]:
+        role = item.get("role")
+        txt = (item.get("text") or "").strip()
+        if role in ("user", "model") and txt:
+            contents.append({"role": role, "parts": [{"text": txt}]})
+    contents.append({"role": "user", "parts": [{"text": question}]})
+    return contents
+
+
+async def _call_gemini_fast(
+    question: str,
+    section: str,
+    module_title: str,
+    history: Optional[list[dict]] = None,
+    diag: Optional[dict] = None,
+) -> Optional[str]:
     """
-    Direct, lightweight async REST call to Gemini with tight per-request timeouts.
-    Never blocks threads, never performs slow discovery.
+    Direct async REST call to Gemini with thinkingBudget=0 (for fast 2.5-flash replies),
+    relaxed safety settings, multi-turn history, and clean model fallback.
     """
     api_key = _get_gemini_api_key()
     if not api_key:
+        if diag is not None:
+            diag["errors"].append("GEMINI_API_KEY missing")
         return None
 
     system_inst = _build_system_instruction(section, module_title)
+    contents = _build_contents(question, history)
 
-    payload_primary = {
-        "systemInstruction": {
-            "parts": [{"text": system_inst}]
-        },
-        "contents": [
-            {
-                "role": "user",
-                "parts": [{"text": question}]
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0.3,
-            "maxOutputTokens": 320,
-        }
-    }
-
-    payload_clean_inlined = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [{
-                    "text": (
-                        f"You are a helpful WhatsApp AI tutor for Ethiopian educators on {module_title}.\n"
-                        f"Teacher's question: {question}\n\n"
-                        "Please answer directly in exactly 1 short paragraph plus 2-3 bullet points (* ) for practical classroom application."
-                    )
-                }]
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0.3,
-            "maxOutputTokens": 320,
-        }
-    }
-
-    candidate_models = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-flash-lite"]
+    candidate_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"]
     preferred = os.getenv("GEMINI_MODEL")
     if preferred and preferred not in candidate_models:
         candidate_models.insert(0, preferred)
 
-    # 3.8s HTTP timeout per request
-    async with httpx.AsyncClient(timeout=3.8) as client:
-        for model_name in candidate_models[:2]:
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for model_name in candidate_models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-            for payload in (payload_primary, payload_clean_inlined):
+
+            # Build payloads: first with thinkingBudget=0 & relaxed safety (fast, free chatbot);
+            # second without thinkingConfig/safetySettings in case a specific model rejects them with HTTP 400.
+            gen_cfg_fast: dict = {"temperature": 0.7, "maxOutputTokens": 700}
+            if "2.5" in model_name or "3" in model_name or "flash" in model_name:
+                gen_cfg_fast["thinkingConfig"] = {"thinkingBudget": 0}
+
+            payload_fast = {
+                "systemInstruction": {"parts": [{"text": system_inst}]},
+                "contents": contents,
+                "safetySettings": _RELAXED_SAFETY,
+                "generationConfig": gen_cfg_fast,
+            }
+            payload_compat = {
+                "systemInstruction": {"parts": [{"text": system_inst}]},
+                "contents": contents,
+                "generationConfig": {"temperature": 0.7, "maxOutputTokens": 700},
+            }
+
+            for idx, payload in enumerate((payload_fast, payload_compat)):
                 try:
+                    t0 = time.monotonic()
                     resp = await client.post(url, json=payload)
+                    elapsed_ms = round((time.monotonic() - t0) * 1000)
+
                     if resp.status_code == 200:
                         data = resp.json()
-                        candidates = data.get("candidates", [])
-                        if candidates:
-                            parts = candidates[0].get("content", {}).get("parts", [])
-                            valid_parts = [
-                                p.get("text", "").strip()
-                                for p in parts
-                                if p.get("text") and not p.get("thought", False)
-                            ]
-                            raw_text = "\n".join(valid_parts).strip() if valid_parts else (parts[-1].get("text", "").strip() if parts else "")
-                            cleaned = clean_ai_output(raw_text, fallback_fn=None)
-                            if cleaned:
-                                return cleaned
+                        cleaned = _extract_gemini_text(data)
+                        if cleaned:
+                            if diag is not None:
+                                diag["model_used"] = model_name
+                                diag["latency_ms"] = elapsed_ms
+                                diag["payload_variant"] = idx
+                            return cleaned
+                        finish = (data.get("candidates") or [{}])[0].get("finishReason")
+                        err_msg = f"{model_name} HTTP 200 empty text (finishReason={finish}): {resp.text[:250]}"
+                        logger.warning(err_msg)
+                        if diag is not None:
+                            diag["errors"].append(err_msg)
                     else:
-                        logger.debug("Fast REST %s HTTP %s: %s", model_name, resp.status_code, resp.text[:100])
+                        err_msg = f"{model_name} (variant {idx}) HTTP {resp.status_code}: {resp.text[:250]}"
+                        logger.warning(err_msg)
+                        if diag is not None:
+                            diag["errors"].append(err_msg)
+                        # Only retry compat payload on HTTP 400 schema error; otherwise move to next model
+                        if resp.status_code != 400:
+                            break
                 except Exception as req_err:
-                    logger.debug("Fast REST %s error: %s", model_name, req_err)
+                    err_msg = f"{model_name} exception: {req_err}"
+                    logger.warning(err_msg)
+                    if diag is not None:
+                        diag["errors"].append(err_msg)
                     break
 
     return None
 
 
-async def answer_question(question: str, section: str = "", module_title: str = "") -> str:
+async def answer_question(
+    question: str,
+    section: str = "",
+    module_title: str = "",
+    history: Optional[list[dict]] = None,
+) -> str:
     """
-    Answer a user's free-text question with module awareness and systematic guardrails.
-    Guaranteed to return in <= 4.5 seconds. Never hangs, never crashes, never leaves
-    the teacher stranded.
+    Answer any user message freely using live Gemini (multi-turn, unrestrictive chatbot).
+    Logs detailed error diagnostics if Gemini fails instead of returning a mismatched canned lecture.
     """
+    diag: dict = {"errors": []}
     api_key = _get_gemini_api_key()
     if api_key:
         try:
-            # Enforce 4.5s hard ceiling so Vercel & WhatsApp never time out
             result = await asyncio.wait_for(
-                _call_gemini_fast(question, section, module_title),
-                timeout=4.5
+                _call_gemini_fast(question, section, module_title, history=history, diag=diag),
+                timeout=18.0,
             )
             if result:
                 return result
         except asyncio.TimeoutError:
-            logger.warning("Gemini API exceeded 4.5s; immediately delivering curated pedagogical KB")
+            diag["errors"].append("Gemini API timed out after 18s")
+            logger.warning("Gemini API timed out after 18s")
         except Exception as e:
+            diag["errors"].append(f"Gemini exception: {e}")
             logger.warning("Gemini call exception: %s", e)
 
-    # Seamless instant pedagogical knowledge base fallback (0.001s)
-    return answer_pedagogy_kb(question, section, module_title)
+    try:
+        from bot import db
+        db.log_activity("system", "gemini_api_error", "; ".join(diag["errors"])[:300] or "No API key")
+    except Exception:
+        pass
+
+    return (
+        "I hit a quick connection issue reaching the AI service just now. "
+        "Please send your message again in a moment!"
+    )
 
 
-async def diagnose_gemini() -> dict:
-    """Diagnostic tool to inspect API key and model discovery from admin dashboard."""
+async def diagnose_gemini(test_prompt: Optional[str] = None) -> dict:
+    """Diagnostic tool to inspect API key, model discovery, and live generation from admin dashboard."""
     api_key = _get_gemini_api_key()
     if not api_key:
         return {"error": "GEMINI_API_KEY is not set in environment"}
@@ -505,6 +555,7 @@ async def diagnose_gemini() -> dict:
         "v1beta_status": None,
         "v1_status": None,
         "available_models": [],
+        "live_test": None,
         "errors": [],
     }
 
@@ -534,5 +585,17 @@ async def diagnose_gemini() -> dict:
                 info["errors"].append(f"v1 HTTP {r_v1.status_code}: {r_v1.text[:200]}")
         except Exception as e:
             info["errors"].append(f"v1 error: {e}")
+
+    if test_prompt is not None:
+        gen_diag: dict = {"errors": []}
+        reply = await _call_gemini_fast(test_prompt or "hello", "", "", diag=gen_diag)
+        info["live_test"] = {
+            "prompt": test_prompt or "hello",
+            "ok": bool(reply),
+            "reply": reply,
+            "model_used": gen_diag.get("model_used"),
+            "latency_ms": gen_diag.get("latency_ms"),
+            "errors": gen_diag.get("errors", []),
+        }
 
     return info

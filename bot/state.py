@@ -25,6 +25,7 @@ IDLE_STATE = {
     "quiz_answers": {},
     "tutor_resume": None,
     "tutor_lesson": None,
+    "tutor_history": [],
     "assessment_index": None,
     "assessment_answers": {},
     "total_messages": 0,
@@ -96,12 +97,29 @@ def start_unit(wa_id: str, unit_id: str = None, restart: bool = False) -> dict:
         set_state(wa_id, state)
         return state
 
-    # If user already has progress and not explicitly restarting, don't wipe!
-    if not restart and state.get("unit_id") == unit_id and state.get("lesson_index") is not None and state.get("lesson_index", 0) > 0:
-        if state.get("lesson_index", 0) < len(lesson_ids):
-            state["phase"] = "lesson"
+    # If user already has progress in this unit and not explicitly restarting, preserve exact step/quiz/awaiting state!
+    has_existing = (
+        not restart
+        and state.get("unit_id") == unit_id
+        and (
+            state.get("phase") in ("lesson", "quiz", "tutor")
+            or (state.get("lesson_index") or 0) > 0
+            or (state.get("step_index") or 0) > 0
+            or bool(state.get("quiz_answers"))
+        )
+    )
+    if has_existing:
+        curr_idx = state.get("lesson_index") or 0
+        if curr_idx < len(lesson_ids):
+            if state.get("phase") == "tutor":
+                resumed_phase = state.get("tutor_resume") or "lesson"
+                state["phase"] = resumed_phase if resumed_phase in ("lesson", "quiz") else "lesson"
+                state["tutor_resume"] = None
+                state["tutor_lesson"] = None
+            elif state.get("phase") != "quiz":
+                state["phase"] = "lesson"
             set_state(wa_id, state)
-            db.log_activity(wa_id, "course_resumed", f"Resumed {unit_id} at Lesson {(state.get('lesson_index', 0) + 1)}")
+            db.log_activity(wa_id, "course_resumed", f"Resumed {unit_id} at Module {curr_idx + 1}, Step {state.get('step_index', 0)}")
             return state
         else:
             state["phase"] = "complete"
@@ -117,6 +135,7 @@ def start_unit(wa_id: str, unit_id: str = None, restart: bool = False) -> dict:
         "awaiting_response": None,
         "tutor_resume": None,
         "tutor_lesson": None,
+        "tutor_history": [],
         "assessment_index": None,
     })
     if restart:
@@ -231,13 +250,19 @@ def advance_past_lesson(wa_id: str):
 def enter_tutor(wa_id: str, lesson_id: str = None) -> dict:
     state = get_state(wa_id)
     curr_phase = state.get("phase", "idle")
-    # Preserve complete phase so returning from tutor does not drop completion status
+    # Preserve existing resume target if user is already in tutor mode
     if is_course_complete(state) or curr_phase == "complete":
         resume = "complete"
+    elif curr_phase == "tutor":
+        resume = state.get("tutor_resume") or "idle"
+        lesson_id = lesson_id or state.get("tutor_lesson")
     elif curr_phase in ("lesson", "quiz"):
         resume = curr_phase
     else:
         resume = "idle"
+
+    if curr_phase != "tutor":
+        state["tutor_history"] = []
 
     state.update({
         "phase": "tutor",
@@ -249,15 +274,29 @@ def enter_tutor(wa_id: str, lesson_id: str = None) -> dict:
     return state
 
 
+def append_tutor_turn(wa_id: str, question: str, answer: str, max_turns: int = 8) -> None:
+    """Append a user/model exchange to the active AI chat history."""
+    state = get_state(wa_id)
+    history = list(state.get("tutor_history") or [])
+    history.append({"role": "user", "text": question[:1000]})
+    history.append({"role": "model", "text": answer[:1500]})
+    # Keep at most max_turns pairs (2 messages per turn)
+    if len(history) > max_turns * 2:
+        history = history[-(max_turns * 2):]
+    state["tutor_history"] = history
+    set_state(wa_id, state)
+
+
 def exit_tutor(wa_id: str) -> str:
     state = get_state(wa_id)
-    resume = state.get("tutor_resume", "idle")
+    resume = state.get("tutor_resume") or "idle"
     if is_course_complete(state):
         resume = "complete"
     state.update({
         "phase": resume,
         "tutor_resume": None,
         "tutor_lesson": None,
+        "tutor_history": [],
     })
     set_state(wa_id, state)
     db.log_activity(wa_id, "tutor_exited", f"Returned to {resume}")
