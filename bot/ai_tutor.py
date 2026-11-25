@@ -31,13 +31,15 @@ from content import curriculum
 
 logger = logging.getLogger("whatsapp_bot")
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.8-flash"
 FALLBACK_MODELS = [
-    "gemini-2.5-flash",
+    "gemini-3.8-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.7-flash",
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview",
     "gemini-flash-latest",
-    "gemini-2.5-flash-lite",
-    "gemini-flash-lite-latest",
-    "gemini-2.5-pro",
 ]
 
 _MAX_ANSWER_WORDS = 130
@@ -437,20 +439,18 @@ async def _call_gemini_fast(
     system_inst = _build_system_instruction(section, module_title)
     contents = _build_contents(question, history)
 
-    candidate_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"]
+    candidate_models = list(FALLBACK_MODELS)
     preferred = os.getenv("GEMINI_MODEL")
     if preferred and preferred not in candidate_models:
         candidate_models.insert(0, preferred)
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        for model_name in candidate_models:
+    async with httpx.AsyncClient(timeout=6.0) as client:
+        for model_name in candidate_models[:5]:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
 
             # Build payloads: first with thinkingBudget=0 & relaxed safety (fast, free chatbot);
             # second without thinkingConfig/safetySettings in case a specific model rejects them with HTTP 400.
-            gen_cfg_fast: dict = {"temperature": 0.7, "maxOutputTokens": 700}
-            if "2.5" in model_name or "3" in model_name or "flash" in model_name:
-                gen_cfg_fast["thinkingConfig"] = {"thinkingBudget": 0}
+            gen_cfg_fast: dict = {"temperature": 0.7, "maxOutputTokens": 700, "thinkingConfig": {"thinkingBudget": 0}}
 
             payload_fast = {
                 "systemInstruction": {"parts": [{"text": system_inst}]},
