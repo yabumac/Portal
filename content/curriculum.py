@@ -125,6 +125,8 @@ UNITS = {
                     {
                         "step_index": 0,
                         "title": "Introduction to AI for Teachers in Ethiopia",
+                        "video_file": "mod1_intro.mp4",
+                        "caption": "Module 1 Introduction: AI for Teaching and Learning",
                         "texts": [
                             "Introduction to Artificial Intelligence (AI) for Teachers in Ethiopia",
                             f"Course description\n{COURSE_DESCRIPTION}",
@@ -168,6 +170,8 @@ UNITS = {
                     {
                         "step_index": 3,
                         "title": "Section 2: Overview of AI in Education",
+                        "video_file": "mod1_section2.mp4",
+                        "caption": "Section 2: Overview of AI in Education & Ethiopian Context",
                         "image_files": ["mod1_education.jpg", "mod1_opportunities.jpg"],
                         "texts": [
                             "Section 2: Overview of AI in Education\n\n"

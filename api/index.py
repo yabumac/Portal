@@ -462,15 +462,20 @@ async def handle_text(wa_id: str, raw: str) -> None:
         await send_assessment_question(wa_id, idx)
         return
 
-    # Replay or send video on demand
+    # Replay or send video on demand (checks current step video first, then lesson video)
     if low in ("video", "watch video", "watch", "play video", "clip", "replay", "show video", "send video"):
         lesson = state.current_lesson(cur)
-        if lesson and lesson.get("video_file"):
-            v_url = get_public_media_url(lesson["video_file"])
-            caption = f"{lesson['title']}\n\n{lesson.get('caption') or 'Watch the lesson video above:'}"
-            await whatsapp.send_media(wa_id, "video", v_url, caption=caption)
+        step_idx = cur.get("step_index", 0)
+        steps = lesson.get("steps", []) if lesson else []
+        active_step = steps[step_idx] if (0 <= step_idx < len(steps)) else None
+        vid_file = (active_step.get("video_file") if active_step else None) or (lesson.get("video_file") if lesson else None)
+        if vid_file and lesson:
+            v_url = get_public_media_url(vid_file)
+            step_title = (active_step.get("title") if active_step else None) or lesson["title"]
+            cap = (active_step.get("caption") if active_step else None) or lesson.get("caption") or "Watch the lesson video above:"
+            await whatsapp.send_media(wa_id, "video", v_url, caption=f"{step_title}\n\n{cap}")
         else:
-            await whatsapp.send_text(wa_id, "Please tap 'Enroll in Course' to view the first module video.")
+            await whatsapp.send_text(wa_id, "No video clip is attached to this section. Tap 'Continue' or type 'menu'.")
         return
 
     # Direct enrollment or start commands
@@ -814,7 +819,7 @@ async def deliver_step(wa_id: str, lesson: dict, step_idx: int) -> None:
     step = steps[step_idx]
 
     if step_idx == 0:
-        # Step 0: Course Intro and Objectives
+        # Step 0: Course Intro, Description, Objectives & Intro Video
         cur["phase"] = "lesson"
         cur["step_index"] = 0
         cur["awaiting_response"] = None
@@ -822,7 +827,18 @@ async def deliver_step(wa_id: str, lesson: dict, step_idx: int) -> None:
 
         for t in step.get("texts", []):
             await whatsapp.send_text(wa_id, t)
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.35)
+
+        vid = step.get("video_file")
+        if vid:
+            try:
+                v_url = get_public_media_url(vid)
+                cap = step.get("caption") or "Module 1 Introduction: AI for Teaching and Learning"
+                await whatsapp.send_media(wa_id, "video", v_url, caption=cap)
+                await asyncio.sleep(1.0)
+            except Exception as e:
+                logger.warning("Failed to send intro video for step 0: %s", e)
+
         await whatsapp.send_buttons(
             wa_id,
             "Ready to begin Section 1?",
@@ -902,7 +918,17 @@ async def deliver_step(wa_id: str, lesson: dict, step_idx: int) -> None:
         # Step 3: Section 2: Overview of AI in Education
         for t in step.get("texts", []):
             await whatsapp.send_text(wa_id, t)
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.35)
+
+        vid = step.get("video_file")
+        if vid:
+            try:
+                v_url = get_public_media_url(vid)
+                cap = step.get("caption") or "Section 2: Overview of AI in Education"
+                await whatsapp.send_media(wa_id, "video", v_url, caption=cap)
+                await asyncio.sleep(1.0)
+            except Exception as e:
+                logger.warning("Failed to send video for step 3: %s", e)
 
         img_list = step.get("image_files", [])
         captions = ["AI in Education", "Opportunities and Limitations of AI"]
