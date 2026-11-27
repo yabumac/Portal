@@ -26,8 +26,10 @@ IDLE_STATE = {
     "tutor_resume": None,
     "tutor_lesson": None,
     "tutor_history": [],
+    "reflection_answers": {},
     "assessment_index": None,
     "assessment_answers": {},
+    "assessment_return_to": None,
     "total_messages": 0,
 }
 
@@ -303,19 +305,32 @@ def exit_tutor(wa_id: str) -> str:
     return state["phase"]
 
 
+def record_reflection_answer(wa_id: str, key: str, user_text: str, ai_feedback: str) -> None:
+    """Persist teacher's typed reflection response and AI feedback for admin reporting."""
+    state = get_state(wa_id)
+    reflections = dict(state.get("reflection_answers") or {})
+    reflections[key] = {
+        "answer": user_text[:1000],
+        "feedback": ai_feedback[:1500],
+    }
+    state["reflection_answers"] = reflections
+    set_state(wa_id, state)
+
+
 # --- Self-Assessment ---------------------------------------------------------
 
-def start_assessment(wa_id: str) -> dict:
+def start_assessment(wa_id: str, return_to: str = "menu") -> dict:
     state = get_state(wa_id)
     state.update({
         "phase": "assessment",
         "assessment_index": 0,
         "assessment_answers": {},
+        "assessment_return_to": return_to,
         "tutor_resume": None,
         "tutor_lesson": None,
     })
     set_state(wa_id, state)
-    db.log_activity(wa_id, "assessment_started", "Started AI Self-Assessment")
+    db.log_activity(wa_id, "assessment_started", f"Started AI Self-Assessment (return_to={return_to})")
     return state
 
 
@@ -334,25 +349,41 @@ def record_assessment_answer(wa_id: str, question_id: str, letter: str) -> dict:
         curr_index = 0
     next_index = curr_index + 1
     done = next_index >= len(curriculum.ASSESSMENT)
+    return_to = state.get("assessment_return_to") or "menu"
     state.update({
         "assessment_answers": answers,
         "assessment_index": next_index,
     })
     if done:
-        state["phase"] = "idle"
+        state["assessment_return_to"] = None
+        if return_to == "step_1":
+            state["phase"] = "lesson"
+            state["step_index"] = 1
+        elif is_course_complete(state):
+            state["phase"] = "complete"
+        elif (state.get("step_index") or 0) > 0:
+            state["phase"] = "lesson"
+        else:
+            state["phase"] = "idle"
     set_state(wa_id, state)
     db.log_activity(wa_id, "assessment_answered", f"{question_id} = {letter}")
     if done:
         db.log_activity(wa_id, "assessment_completed", "Completed AI Self-Assessment")
-    return {"done": done, "answers": answers}
+    return {"done": done, "answers": answers, "return_to": return_to}
 
 
 def abort_assessment(wa_id: str) -> None:
     state = get_state(wa_id)
+    if is_course_complete(state):
+        next_phase = "complete"
+    elif state.get("assessment_return_to") == "step_1" or (state.get("step_index") or 0) > 0:
+        next_phase = "lesson"
+    else:
+        next_phase = "idle"
     state.update({
-        "phase": "idle",
+        "phase": next_phase,
         "assessment_index": None,
-        "assessment_answers": None,
+        "assessment_return_to": None,
     })
     set_state(wa_id, state)
     db.log_activity(wa_id, "assessment_aborted", "Exited AI Self-Assessment")

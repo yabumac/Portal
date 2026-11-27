@@ -424,9 +424,10 @@ async def _call_gemini_fast(
     module_title: str,
     history: Optional[list[dict]] = None,
     diag: Optional[dict] = None,
+    system_instruction: Optional[str] = None,
 ) -> Optional[str]:
     """
-    Direct async REST call to Gemini with thinkingBudget=0 (for fast 2.5-flash replies),
+    Direct async REST call to Gemini with thinkingBudget=0 (for fast replies),
     relaxed safety settings, multi-turn history, and clean model fallback.
     """
     api_key = _get_gemini_api_key()
@@ -435,7 +436,7 @@ async def _call_gemini_fast(
             diag["errors"].append("GEMINI_API_KEY missing")
         return None
 
-    system_inst = _build_system_instruction(section, module_title)
+    system_inst = system_instruction or _build_system_instruction(section, module_title)
     contents = _build_contents(question, history)
 
     candidate_models = list(FALLBACK_MODELS)
@@ -540,6 +541,55 @@ async def answer_question(
         "I hit a quick connection issue reaching the AI service just now. "
         "Please send your message again in a moment!"
     )
+
+
+async def evaluate_reflection(
+    question: str,
+    user_answer: str,
+    reference_answer: str,
+    mode: str = "what_is_ai",
+) -> str:
+    """
+    Generate real-time AI feedback acknowledging what the teacher actually typed,
+    constructively guiding improvements when needed, and pairing it cleanly with
+    the course's official answer/takeaway.
+    """
+    coach_sys = (
+        "You are a warm, observant Ethiopian teacher trainer giving real-time feedback on a short reflection answer in WhatsApp.\n"
+        "Respond directly to what the teacher actually wrote:\n"
+        "1. Acknowledge specifically what they mentioned (quote or reference their idea/tool/example).\n"
+        "2. If their point is accurate or thoughtful, praise what they got right and build on it briefly.\n"
+        "3. If their answer is partial, off-track, very brief, or lists a non-AI tool (like a basic calculator), "
+        "gently encourage what they tried (e.g., 'Good try connecting it to...') and clarify a stronger perspective or better approach.\n"
+        "4. Write ONLY 2 to 3 natural sentences of personalized coaching. Do NOT repeat the official course answer verbatim because it will be appended right after your feedback."
+    )
+    prompt = (
+        f"Course Question: {question}\n"
+        f"Reference Course Answer / Goal: {reference_answer}\n"
+        f"Teacher's Real-Time Answer: {user_answer}\n\n"
+        "Give brief, encouraging, personalized feedback on the teacher's answer:"
+    )
+
+    ai_coaching = None
+    api_key = _get_gemini_api_key()
+    if api_key:
+        try:
+            ai_coaching = await asyncio.wait_for(
+                _call_gemini_fast(
+                    prompt,
+                    section="",
+                    module_title="Module 1",
+                    system_instruction=coach_sys,
+                ),
+                timeout=12.0,
+            )
+        except Exception as e:
+            logger.warning("Reflection AI feedback error (using clean fallback): %s", e)
+
+    label = "Course Definition:" if mode == "what_is_ai" else "Key Takeaway:"
+    if ai_coaching:
+        return f"{ai_coaching.strip()}\n\n{label}\n{reference_answer}"
+    return f"Thank you for sharing your answer!\n\n{label}\n{reference_answer}"
 
 
 async def diagnose_gemini(test_prompt: Optional[str] = None) -> dict:

@@ -721,6 +721,7 @@ def get_analytics_summary() -> dict:
             "last_seen_relative": rel_time,
             "assessment_answers": assess_answers,
             "quiz_answers": quiz_answers,
+            "reflection_answers": u.get("reflection_answers") or {},
             "created_at": u.get("created_at", ""),
         })
 
@@ -747,6 +748,8 @@ def get_analytics_summary() -> dict:
 
     # Assessment insights
     survey_stats = {
+        "total_completed": assessment_completed,
+        "total_respondents": sum(1 for u in all_users.values() if bool(u.get("assessment_answers"))),
         "q1_ai_use": {"A": 0, "B": 0, "C": 0},
         "q2_comfort": {"A": 0, "B": 0, "C": 0},
         "q3_challenge": {"A": 0, "B": 0, "C": 0},

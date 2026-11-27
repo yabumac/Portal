@@ -527,6 +527,8 @@ async def export_users_csv(request: Request):
         "Module 1 Q1 (What is AI)",
         "Module 1 Q2 (Generative AI Example)",
         "Module 1 Q3 (Can AI Be Trusted)",
+        "Module 1 Reflection: What is AI",
+        "Module 1 Reflection: Everyday AI Use",
         "Quiz Score Summary (Correct/Attempted)",
         "Total Messages / Interactions",
         "First Seen / Registered (UTC)",
@@ -622,6 +624,10 @@ async def export_users_csv(request: Request):
 
         quiz_summary_str = f"{correct_count}/{attempted_count} correct" if attempted_count > 0 else "0/0 attempted"
 
+        reflections = u.get("reflection_answers") or {}
+        refl_what_is_ai = (reflections.get("what_is_ai") or {}).get("answer") or "Not answered"
+        refl_everyday = (reflections.get("everyday_ai_use") or {}).get("answer") or "Not answered"
+
         row = [
             phone,
             phase,
@@ -634,6 +640,8 @@ async def export_users_csv(request: Request):
             q3_text,
             q4_text,
             *mod_quiz_cols,
+            refl_what_is_ai,
+            refl_everyday,
             quiz_summary_str,
             u.get("total_messages", 0),
             u.get("created_at", ""),
@@ -1712,9 +1720,10 @@ async def admin_dashboard(request: Request):
                 <div class="chart-title-wrap">
                     <div>
                         <h2 class="chart-card-title">Teacher AI Readiness Survey Insights</h2>
-                        <p class="chart-subtitle">Aggregated self-assessment data from educators</p>
+                        <p class="chart-subtitle">Aggregated educator survey responses from WhatsApp onboarding & completion</p>
                     </div>
                 </div>
+                <span class="badge badge-purple" id="surveyResponseBadge"><span class="badge-dot"></span> {summary['assessment_completed']} completed surveys</span>
             </div>
             <div class="insights-grid" id="surveyInsightsGrid">
                 <!-- Injected via JavaScript from real DB data -->
@@ -1985,39 +1994,66 @@ async def admin_dashboard(request: Request):
             }}, 30000);
         }});
 
+        function renderSurveyCardRow(label, count, total, barColor) {{
+            const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+            return `
+                <div style="margin-bottom:10px;">
+                    <div class="insight-row" style="margin-bottom:4px;">
+                        <span style="font-size:12px;color:#334155;">${{label}}</span>
+                        <b style="font-size:12px;color:#0f172a;">${{count}} <span style="color:#64748b;font-weight:500;">(${{pct}}%)</span></b>
+                    </div>
+                    <div style="width:100%;height:6px;background:#e2e8f0;border-radius:9999px;overflow:hidden;">
+                        <div style="width:${{pct}}%;height:100%;background:${{barColor}};border-radius:9999px;transition:width 0.3s ease;"></div>
+                    </div>
+                </div>
+            `;
+        }}
+
         function renderSurveyCards(insights) {{
             const grid = document.getElementById('surveyInsightsGrid');
-            if (!insights) return;
+            if (!insights || !grid) return;
+
+            const badge = document.getElementById('surveyResponseBadge');
+            if (badge) {{
+                const completed = insights.total_completed ?? (dashboardData.summary ? dashboardData.summary.assessment_completed : 0);
+                const respondents = insights.total_respondents ?? completed;
+                badge.innerHTML = `<span class="badge-dot"></span> ${{completed}} completed (${{respondents}} responded)`;
+            }}
 
             const q1 = insights.q1_ai_use || insights.ai_use || {{}};
             const q2 = insights.q2_comfort || insights.comfort || {{}};
             const q3 = insights.q3_challenge || insights.challenge || {{}};
             const q4 = insights.q4_goal || insights.goal || {{}};
 
+            const q1Total = (q1.A || 0) + (q1.B || 0) + (q1.C || 0);
+            const q2Total = (q2.A || 0) + (q2.B || 0) + (q2.C || 0);
+            const q3Total = (q3.A || 0) + (q3.B || 0) + (q3.C || 0);
+            const q4Total = (q4.A || 0) + (q4.B || 0) + (q4.C || 0);
+
             grid.innerHTML = `
                 <div class="insight-card">
-                    <h4>AI Usage Frequency</h4>
-                    <div class="insight-row"><span>Never:</span><b>${{q1.A || q1['Never'] || 0}}</b></div>
-                    <div class="insight-row"><span>Sometimes:</span><b>${{q1.B || q1['Sometimes'] || 0}}</b></div>
-                    <div class="insight-row"><span>Regularly:</span><b>${{q1.C || q1['Regularly'] || 0}}</b></div>
+                    <h4>Q1: Current AI Usage (${{q1Total}})</h4>
+                    ${{renderSurveyCardRow('A: Not used yet', q1.A || 0, q1Total, '#64748b')}}
+                    ${{renderSurveyCardRow('B: Occasionally for prep', q1.B || 0, q1Total, '#3b82f6')}}
+                    ${{renderSurveyCardRow('C: Regularly weekly', q1.C || 0, q1Total, '#10b981')}}
                 </div>
                 <div class="insight-card">
-                    <h4>Confidence Level</h4>
-                    <div class="insight-row"><span>Not confident:</span><b>${{q2.A || q2['Not confident'] || 0}}</b></div>
-                    <div class="insight-row"><span>Somewhat confident:</span><b>${{q2.B || q2['Somewhat confident'] || 0}}</b></div>
-                    <div class="insight-row"><span>Very confident:</span><b>${{q2.C || q2['Very confident'] || 0}}</b></div>
+                    <h4>Q2: Classroom Confidence (${{q2Total}})</h4>
+                    ${{renderSurveyCardRow('A: Not confident yet', q2.A || 0, q2Total, '#f97316')}}
+                    ${{renderSurveyCardRow('B: Somewhat confident', q2.B || 0, q2Total, '#3b82f6')}}
+                    ${{renderSurveyCardRow('C: Very confident', q2.C || 0, q2Total, '#10b981')}}
                 </div>
                 <div class="insight-card">
-                    <h4>Primary Classroom Challenge</h4>
-                    <div class="insight-row"><span>Large Class Sizes (50+):</span><b>${{q3.A || q3['Large classes'] || 0}}</b></div>
-                    <div class="insight-row"><span>Limited Devices/Internet:</span><b>${{q3.B || q3['Limited devices'] || 0}}</b></div>
-                    <div class="insight-row"><span>Writing Effective Prompts:</span><b>${{q3.C || q3['Prompt writing'] || 0}}</b></div>
+                    <h4>Q3: Primary School Constraint (${{q3Total}})</h4>
+                    ${{renderSurveyCardRow('A: Large classes (50+)', q3.A || 0, q3Total, '#8b5cf6')}}
+                    ${{renderSurveyCardRow('B: Limited devices / internet', q3.B || 0, q3Total, '#ef4444')}}
+                    ${{renderSurveyCardRow('C: Writing clear prompts', q3.C || 0, q3Total, '#3b82f6')}}
                 </div>
                 <div class="insight-card">
-                    <h4>Primary Course Goal</h4>
-                    <div class="insight-row"><span>Practical Classroom Ideas:</span><b>${{q4.A || q4['Practical ideas'] || 0}}</b></div>
-                    <div class="insight-row"><span>Time-Saving Planning Tools:</span><b>${{q4.B || q4['Time saving'] || 0}}</b></div>
-                    <div class="insight-row"><span>Responsible & Ethical AI:</span><b>${{q4.C || q4['Ethical AI'] || 0}}</b></div>
+                    <h4>Q4: Main Course Goal (${{q4Total}})</h4>
+                    ${{renderSurveyCardRow('A: Practical Ethiopian activities', q4.A || 0, q4Total, '#10b981')}}
+                    ${{renderSurveyCardRow('B: Time-saving planning', q4.B || 0, q4Total, '#3b82f6')}}
+                    ${{renderSurveyCardRow('C: Ethical, privacy-first use', q4.C || 0, q4Total, '#8b5cf6')}}
                 </div>
             `;
         }}
@@ -2316,8 +2352,25 @@ async def admin_dashboard(request: Request):
                     histHtml = '<p style="color:#94a3b8;font-size:13px;">No timeline entries recorded yet.</p>';
                 }}
 
+                const assess = u.assessment_answers || {{}};
+                const surveyLabels = {{
+                    ai_use: {{ title: 'AI Usage', A: 'Not used yet', B: 'Occasionally for prep', C: 'Regularly weekly' }},
+                    comfort: {{ title: 'Confidence', A: 'Not confident yet', B: 'Somewhat confident', C: 'Very confident' }},
+                    challenge: {{ title: 'Constraint', A: 'Large class sizes (50+)', B: 'Limited devices / internet', C: 'Writing prompts' }},
+                    goal: {{ title: 'Main Goal', A: 'Practical activities', B: 'Time-saving prep', C: 'Ethical & responsible use' }}
+                }};
+                const surveyRows = Object.entries(surveyLabels).map(([k, meta]) => {{
+                    const v = assess[k];
+                    const txt = v ? `${{v}}: ${{meta[v] || v}}` : '<span style="color:#94a3b8;">Not answered</span>';
+                    return `<div style="font-size:12px;margin-bottom:4px;"><b>${{meta.title}}:</b> ${{txt}}</div>`;
+                }}).join('');
+
+                const refl = u.reflection_answers || {{}};
+                const reflWhat = (refl.what_is_ai && refl.what_is_ai.answer) ? escapeHtml(refl.what_is_ai.answer) : '<span style="color:#94a3b8;">Not answered</span>';
+                const reflDaily = (refl.everyday_ai_use && refl.everyday_ai_use.answer) ? escapeHtml(refl.everyday_ai_use.answer) : '<span style="color:#94a3b8;">Not answered</span>';
+
                 modalBody.innerHTML = `
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;background:#f1f5f9;padding:16px;border-radius:12px;font-size:13px;">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;background:#f1f5f9;padding:16px;border-radius:12px;font-size:13px;">
                         <div><b>Phone:</b> <span style="font-family:monospace;">${{u.phone_number}}</span></div>
                         <div><b>Status:</b> ${{u.phase.toUpperCase()}}</div>
                         <div><b>Current Step:</b> ${{u.phase === 'complete' ? 'Course Completed' : (u.lesson_index !== null ? 'Module ' + (u.lesson_index + 1) : 'None')}}</div>
@@ -2325,8 +2378,19 @@ async def admin_dashboard(request: Request):
                         <div><b>Completed Modules:</b> ${{(u.completed_lessons || []).length}} / ${{data.progression_funnel ? data.progression_funnel.total_modules : 1}}</div>
                         <div><b>Last Active:</b> ${{u.last_seen ? new Date(u.last_seen).toLocaleString() : 'Never'}}</div>
                     </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px;">
+                        <div style="background:#f8fafc;border:1px solid #e2e8f0;padding:12px 14px;border-radius:10px;">
+                            <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:8px;">Survey Answers</div>
+                            ${{surveyRows}}
+                        </div>
+                        <div style="background:#f8fafc;border:1px solid #e2e8f0;padding:12px 14px;border-radius:10px;">
+                            <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:8px;">Short-Answer Reflections</div>
+                            <div style="font-size:12px;margin-bottom:6px;"><b>What is AI:</b> ${{reflWhat}}</div>
+                            <div style="font-size:12px;"><b>Daily AI Use:</b> ${{reflDaily}}</div>
+                        </div>
+                    </div>
                     <h4 style="font-size:14px;margin-bottom:12px;font-weight:700;">Chronological Learning Log (${{hist.length}} actions)</h4>
-                    <div style="max-height:340px;overflow-y:auto;">${{histHtml}}</div>
+                    <div style="max-height:300px;overflow-y:auto;">${{histHtml}}</div>
                 `;
             }} catch (err) {{
                 modalBody.innerHTML = `<p style="color:#ef4444;">Error loading student details: ${{err.message}}</p>`;
